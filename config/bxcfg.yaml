@@ -1,0 +1,67 @@
+# 
+# YAML init file for BXLOGIC web listener
+#
+#
+
+globals:
+  bind_host:                   0.0.0.0
+  port:                        9050
+  debug:                       True
+  logfile:                     bxsvc.log
+  project_directory:           $BXLOGIC_HOME
+  service_module:              bx_services
+  transform_function_module:   bx_transforms
+  decoder_module:              bx_decode
+  deployment_type:             
+
+
+service_objects:
+  postgres:
+    class: PostgreSQLService
+    init_params:
+        - name: host
+          value: $PGSQL_HOST
+
+        - name: port
+          value: 5432
+
+        - name: database
+          value: binary_test
+
+        - name: schema  
+          value: bxlogic
+
+        - name: username
+          value: $PGSQL_DB_USER
+        
+        - name: password
+          value: $PGSQL_PASSWORD
+
+data_shapes:
+  default:
+    fields:
+
+transforms:
+  ping:
+    route:              /ping
+    method:             GET
+    input_shape:        default
+    output_mimetype:    application/json
+
+  new_courier:
+    route:              /courier
+    method:             POST
+    input_shape:        default
+    output_mimetype:    application/json
+
+
+decoders:
+  application/json; charset=utf-8: decode_json
+
+
+error_handlers:
+        - error:                NoSuchObjectException
+          tx_status_code:       HTTP_NOT_FOUND 
+                
+        - error:                DuplicateIDException
+          tx_status_code:       HTTP_BAD_REQUEST
