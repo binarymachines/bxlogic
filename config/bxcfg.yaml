@@ -41,6 +41,98 @@ data_shapes:
   default:
     fields:
 
+  new_courier_shape:
+    fields:
+      - name: first_name
+        datatype: str
+        required: True
+
+      - name: last_name
+        datatype: str
+        required: True
+
+      - name: mobile_number
+        datatype: str
+        required: True
+      
+      - name: email
+        datatype: str
+        required: True
+
+      - name: boroughs
+        datatype: str
+        required: True
+
+      - name: transport_methods
+        datatype: str
+        required: True
+
+  new_job_shape:
+    fields:
+      - name: first_name
+        datatype: str
+        required: True
+
+      - name: last_name
+        datatype: str
+        required: True
+  
+      - name: phone
+        datatype: str
+        required: True
+
+      - name: email
+        datatype: str
+        required: True
+
+      - name: delivery_address
+        datatype: str
+        required: True
+
+      - name: delivery_borough
+        datatype: str
+        required: True
+
+      - name: delivery_zip
+        datatype: str
+        required: True
+
+      - name: delivery_neighborhood
+        datatype: str
+        required: False
+
+      - name: pickup_address
+        datatype: str
+        required: True
+
+      - name: pickup_borough
+        datatype: str
+        required: True
+
+      - name: pickup_neighborhood
+        datatype: str
+        required: False
+
+      - name: pickup_zip
+        datatype: str
+        required: True
+
+      - name: payment_method
+        datatype: str
+        required: True
+
+      - name: items
+        datatype: str
+        required: True
+
+      - name: delivery_window_open
+        datatype: str
+        required: False
+
+      - name: delivery_window_close
+        datatype: str
+        required: False
+
 transforms:
   ping:
     route:              /ping
@@ -51,7 +143,13 @@ transforms:
   new_courier:
     route:              /courier
     method:             POST
-    input_shape:        default
+    input_shape:        new_courier_shape
+    output_mimetype:    application/json
+
+  new_job:
+    route:              /job
+    method:             POST
+    input_shape:        new_job_shape
     output_mimetype:    application/json
 
 
