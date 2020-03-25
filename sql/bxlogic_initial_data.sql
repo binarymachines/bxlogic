@@ -46,3 +46,12 @@ VALUES
 (5, 'Staten Island');
 
 
+INSERT INTO lookup_payment_methods
+(id, value)
+VALUES
+(1, 'Cash'),
+(2, 'PayPal'),
+(3, 'Venmo'),
+(4, 'CashApp'),
+(5, 'Zelle'),
+(6, 'AbolitionAction')

@@ -67,7 +67,7 @@ data_shapes:
         datatype: str
         required: True
 
-  new_job_shape:
+  new_client_shape:
     fields:
       - name: first_name
         datatype: str
@@ -75,13 +75,20 @@ data_shapes:
 
       - name: last_name
         datatype: str
-        required: True
-  
+        required: False
+
       - name: phone
         datatype: str
         required: True
 
       - name: email
+        datatype: str
+        required: False
+
+
+  new_job_shape:
+    fields:
+      - name: client_id
         datatype: str
         required: True
 
@@ -144,6 +151,12 @@ transforms:
     route:              /courier
     method:             POST
     input_shape:        new_courier_shape
+    output_mimetype:    application/json
+
+  new_client:
+    route:              /client
+    method:             POST
+    input_shape:        new_client_shape
     output_mimetype:    application/json
 
   new_job:

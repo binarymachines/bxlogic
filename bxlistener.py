@@ -51,11 +51,13 @@ new_courier_shape.add_field('mobile_number', 'str', True)
 new_courier_shape.add_field('email', 'str', True)
 new_courier_shape.add_field('boroughs', 'str', True)
 new_courier_shape.add_field('transport_methods', 'str', True)
+new_client_shape = core.InputShape("new_client_shape")
+new_client_shape.add_field('first_name', 'str', True)
+new_client_shape.add_field('last_name', 'str', False)
+new_client_shape.add_field('phone', 'str', True)
+new_client_shape.add_field('email', 'str', False)
 new_job_shape = core.InputShape("new_job_shape")
-new_job_shape.add_field('first_name', 'str', True)
-new_job_shape.add_field('last_name', 'str', True)
-new_job_shape.add_field('phone', 'str', True)
-new_job_shape.add_field('email', 'str', True)
+new_job_shape.add_field('client_id', 'str', True)
 new_job_shape.add_field('delivery_address', 'str', True)
 new_job_shape.add_field('delivery_borough', 'str', True)
 new_job_shape.add_field('delivery_zip', 'str', True)
@@ -73,6 +75,7 @@ new_job_shape.add_field('delivery_window_close', 'str', False)
 
 xformer.register_transform('ping', default, bx_transforms.ping_func, 'application/json')
 xformer.register_transform('new_courier', new_courier_shape, bx_transforms.new_courier_func, 'application/json')
+xformer.register_transform('new_client', new_client_shape, bx_transforms.new_client_func, 'application/json')
 xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func, 'application/json')
 
 #-- endpoints -----------------
@@ -121,6 +124,33 @@ def new_courier():
 
                 
         output_mimetype = xformer.target_mimetype_for_transform('new_courier')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/client', methods=['POST'])
+def new_client():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('new_client', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('new_client')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)

@@ -31,7 +31,7 @@ assignments.
 def copy_fields_from(source_dict, *fields):
     output_dict = {}
     for field in fields:
-        output_dict[field] = source_dict[field]
+        output_dict[field] = source_dict.get(field)
     
     return output_dict
 
@@ -58,6 +58,16 @@ class ObjectFactory(object):
         CourierBorough = db_svc.Base.classes.courier_boroughs
         return CourierBorough(**kwargs)
 
+    @classmethod
+    def create_client(cls, db_svc, **kwargs):
+        Client = db_svc.Base.classes.clients
+        return Client(**kwargs)
+
+    @classmethod
+    def create_job(cls, db_svc, **kwargs):
+        Job = db_svc.Base.classes.job_data
+        return Job(**kwargs)
+
 
 def lookup_transport_method_ids(name_array, session, db_svc):
     TransportMethod = db_svc.Base.classes.transport_methods
@@ -80,9 +90,36 @@ def lookup_borough_ids(name_array, session, db_svc):
     return ids
 
 
-def prepare_courier_record(input_data):
+def lookup_payment_method_id(name, session, db_svc):
+    PaymentMethod = db_svc.Base.classes.lookup_payment_methods
+    method = session.query(PaymentMethod).filter(PaymentMethod.value == name).one()
+    return method.id
+
+
+def prepare_courier_record(input_data, session, db_svc):
     output_record = copy_fields_from(input_data, 'first_name', 'last_name', 'mobile_number', 'email')
     output_record['duty_status'] = 0    # 0 is inactive, 1 is active
+    return output_record
+
+
+def prepare_job_record(input_data, session, db_svc):
+    output_record = copy_fields_from(input_data,
+                                    'client_id',
+                                    'delivery_address',
+                                    'delivery_borough',
+                                    'delivery_zip',
+                                    'delivery_neighborhood',
+                                    'pickup_address',
+                                    'pickup_borough',
+                                    'pickup_neighborhood',
+                                    'pickup_zip',
+                                    'items',
+                                    'delivery_window_open',
+                                    'delivery_window_close')
+
+    borough_tag = input_data['delivery_borough'].lstrip().rstrip().lower().replace(' ', '_')
+    output_record['payment_method'] = lookup_payment_method_id(input_data['payment_method'], session, db_svc)
+    output_record['job_tag'] = generate_job_tag('bxlog_%s_%s' % (borough_tag, input_data['delivery_zip']))
     return output_record
 
 
@@ -117,7 +154,7 @@ def new_courier_func(input_data, service_objects, **kwargs):
         boroughs = [b.lstrip().rstrip() for b in input_data['boroughs'].split(',')]
         borough_ids = lookup_borough_ids(boroughs, session, db_svc)
 
-        raw_record = prepare_courier_record(input_data)
+        raw_record = prepare_courier_record(input_data, session, db_svc)
         courier = ObjectFactory.create_courier(db_svc, **raw_record)
         session.add(courier)
         session.flush()
@@ -136,6 +173,31 @@ def new_courier_func(input_data, service_objects, **kwargs):
 
 
 def new_job_func(input_data, service_objects, **kwargs):
-    raise snap.TransformNotImplementedException('new_job_func')
+    db_svc = service_objects.lookup('postgres')
+    job_id = None
+    raw_record = None
+    with db_svc.txn_scope() as session:
+        raw_record = prepare_job_record(input_data, session, db_svc)
+        job = ObjectFactory.create_job(db_svc, **raw_record)
+        session.add(job)
+        session.flush()
+        job_id = job.id
+    
+    raw_record['id'] = job_id
+    return core.TransformStatus(ok_status('new Job created', data=raw_record))
+
+
+def new_client_func(input_data, service_objects, **kwargs):
+    db_svc = service_objects.lookup('postgres')
+    client_id = None
+    with db_svc.txn_scope() as session:
+        client = ObjectFactory.create_client(db_svc, **input_data)
+        session.add(client)
+        session.flush()
+        client_id = client.id
+
+    input_data['id'] = client_id
+    return core.TransformStatus(ok_status('new Client created', data=input_data))
+
 
 
