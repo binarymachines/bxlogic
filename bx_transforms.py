@@ -10,6 +10,23 @@ from sqlalchemy.sql import text
 import git
 import constants as const
 
+'''
+TODO: if a job's core information changes AFTER the job has been accepted, auto-generate message(s) for the courier
+containing the updated information
+
+TODO: figure out credentials and groups (add Sasha)
+--aws secrets manager?
+
+TODO: if a courier accepts only one phase of an advertised job:
+
+1. continue broadcasting with an updated notice that only the remaining phase is required, and 
+2. update the job's status to "accepted_partial". 
+
+Once all phases are accepted, ensure that the multiple assigned couriers are notified of their respective
+assignments.
+
+'''
+
 
 def copy_fields_from(source_dict, *fields):
     output_dict = {}
@@ -28,18 +45,27 @@ def generate_job_tag(name):
 class ObjectFactory(object):
     @classmethod
     def create_courier(cls, db_svc, **kwargs):
-        Courier = db_svc.Base.classes.fact_couriers
+        Courier = db_svc.Base.classes.couriers
         return Courier(**kwargs)
+
+    @classmethod
+    def create_courier_transport_method(cls, db_svc, **kwargs):
+        CourierTransportMethod = db_svc.Base.classes.courier_transport_methods
+        return CourierTransportMethod(**kwargs)
+
+    @classmethod
+    def create_courier_borough(cls, db_svc, **kwargs):
+        CourierBorough = db_svc.Base.classes.courier_boroughs
+        return CourierBorough(**kwargs)
 
 
 def lookup_transport_method_ids(name_array, session, db_svc):
     TransportMethod = db_svc.Base.classes.transport_methods
     ids = []
     for name in name_array:
-        query = session.query(TransportMethod).filter(TransportMethod.name == name)
-        result = query.one()
-        if result:
-            ids.append(result.id)
+        # one() will throw an exception if no match
+        result = session.query(TransportMethod).filter(TransportMethod.value == name).one()
+        ids.append(result.id)
 
     return ids
 
@@ -48,10 +74,8 @@ def lookup_borough_ids(name_array, session, db_svc):
     Borough = db_svc.Base.classes.boroughs
     ids = []
     for name in name_array:
-        query = session.query(Borough).filter(Borough.name == name)
-        result = query.one()
-        if result:
-            ids.append(result.id)
+        result = session.query(Borough).filter(Borough.value == name).one()
+        ids.append(result.id)
 
     return ids
 
@@ -85,22 +109,33 @@ def new_courier_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
     courier_id = None
 
-    transport_method_ids = lookup_transport_method_ids[input_data['transport_methods']]
-    borough_ids = lookup_borough_ids[input_data['boroughs']]
-    raw_record = prepare_courier_record(input_data)
-
     with db_svc.txn_scope() as session:
-        courier = ObjectFactory.create_courier(raw_record)
+
+        methods = [m.lstrip().rstrip() for m in input_data['transport_methods'].split(',')]
+        transport_method_ids = lookup_transport_method_ids(methods, session, db_svc)
+
+        boroughs = [b.lstrip().rstrip() for b in input_data['boroughs'].split(',')]
+        borough_ids = lookup_borough_ids(boroughs, session, db_svc)
+
+        raw_record = prepare_courier_record(input_data)
+        courier = ObjectFactory.create_courier(db_svc, **raw_record)
         session.add(courier)
         session.flush()
         courier_id = courier.id
 
         for id in transport_method_ids:
-            session.add(ObjectFactory.create_courier_transport_method(db_svc, courier_id, id))
-
+            session.add(ObjectFactory.create_courier_transport_method(db_svc,
+                                                                      courier_id=courier.id,
+                                                                      transport_method_id=id))
         for id in borough_ids:
-            session.add(ObjectFactory.create_courier_borough(db_svc, courier_id, id))
+            session.add(ObjectFactory.create_courier_borough(db_svc,
+                                                             courier_id=courier.id,
+                                                             borough_id=id))
 
     return core.TransformStatus(ok_status('new Courier created', id=courier_id))
+
+
+def new_job_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('new_job_func')
 
 

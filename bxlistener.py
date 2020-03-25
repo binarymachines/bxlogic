@@ -17,7 +17,7 @@ import argparse
 import sys
 from snap.loggers import request_logger as log
 
-sys.path.append('/home/dtaylor/workshop/binary/bx_logistics')
+sys.path.append('/home/dtaylor/workshop/binary/bxlogic')
 
 import bx_transforms 
 
@@ -44,12 +44,36 @@ xformer.register_error_code(snap.TransformNotImplementedException, snap.HTTP_NOT
 #-- data shapes ----------
 
 default = core.InputShape("default")
-default = core.InputShape("default")
+new_courier_shape = core.InputShape("new_courier_shape")
+new_courier_shape.add_field('first_name', 'str', True)
+new_courier_shape.add_field('last_name', 'str', True)
+new_courier_shape.add_field('mobile_number', 'str', True)
+new_courier_shape.add_field('email', 'str', True)
+new_courier_shape.add_field('boroughs', 'str', True)
+new_courier_shape.add_field('transport_methods', 'str', True)
+new_job_shape = core.InputShape("new_job_shape")
+new_job_shape.add_field('first_name', 'str', True)
+new_job_shape.add_field('last_name', 'str', True)
+new_job_shape.add_field('phone', 'str', True)
+new_job_shape.add_field('email', 'str', True)
+new_job_shape.add_field('delivery_address', 'str', True)
+new_job_shape.add_field('delivery_borough', 'str', True)
+new_job_shape.add_field('delivery_zip', 'str', True)
+new_job_shape.add_field('delivery_neighborhood', 'str', False)
+new_job_shape.add_field('pickup_address', 'str', True)
+new_job_shape.add_field('pickup_borough', 'str', True)
+new_job_shape.add_field('pickup_neighborhood', 'str', False)
+new_job_shape.add_field('pickup_zip', 'str', True)
+new_job_shape.add_field('payment_method', 'str', True)
+new_job_shape.add_field('items', 'str', True)
+new_job_shape.add_field('delivery_window_open', 'str', False)
+new_job_shape.add_field('delivery_window_close', 'str', False)
 
 #-- transforms ----
 
 xformer.register_transform('ping', default, bx_transforms.ping_func, 'application/json')
-xformer.register_transform('new_courier', default, bx_transforms.new_courier_func, 'application/json')
+xformer.register_transform('new_courier', new_courier_shape, bx_transforms.new_courier_func, 'application/json')
+xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func, 'application/json')
 
 #-- endpoints -----------------
 
@@ -97,6 +121,33 @@ def new_courier():
 
                 
         output_mimetype = xformer.target_mimetype_for_transform('new_courier')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/job', methods=['POST'])
+def new_job():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('new_job', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('new_job')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
