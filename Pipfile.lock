@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "6b503e4bfc9671c643ca601c87b94970756a72454d74b4af9cd2f86fbb135f14"
+            "sha256": "1dbe09a0e2026fab372a6b788fc4f9f34ce70a6f324585db7fa32974ecef48c0"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -25,17 +25,17 @@
         },
         "boto3": {
             "hashes": [
-                "sha256:d58f322045fad89788bb6a035ae84a248f1bc243775f7cf34a033e669dbb28ee",
-                "sha256:d5dc9faf5c0ba17396cca5200807790cf7036173304100a008602b211d7bdedd"
+                "sha256:6f113f02f3098b3e37d24caa726a8e81fbc16f6d5cafbf61b7d285b9f7e104e9",
+                "sha256:af09a4f3254fcf6a781ad1a700f702ce15526a25ebe96a14f5cd2ec46e9d924c"
             ],
-            "version": "==1.12.27"
+            "version": "==1.12.28"
         },
         "botocore": {
             "hashes": [
-                "sha256:5df5b59215902b68fe9a4f63608826661bfca321a94c927bd5d2d231441f9a66",
-                "sha256:bb1e86897c7393862a2a9b5ba9c68d9f20d2abd791d19e11d55d24e9d9388072"
+                "sha256:21674f491f6bdc886179de644d00dec05276fac292117f86685513006d83fe0a",
+                "sha256:74f81aca90cdbe084bcfa19589bd2c6470bb47dd1fd9635bf5484ecf7577fd61"
             ],
-            "version": "==1.15.27"
+            "version": "==1.15.28"
         },
         "certifi": {
             "hashes": [
@@ -85,6 +85,21 @@
                 "sha256:f4d97201660e6bbcff2d89d082b5b6d31abee04b1b3003ee073a6fd25ad1d69a"
             ],
             "version": "==3.0.8"
+        },
+        "gitdb": {
+            "hashes": [
+                "sha256:284a6a4554f954d6e737cddcff946404393e030b76a282c6640df8efd6b3da5e",
+                "sha256:598e0096bb3175a0aab3a0b5aedaa18a9a25c6707e0eca0695ba1a0baf1b2150"
+            ],
+            "version": "==4.0.2"
+        },
+        "gitpython": {
+            "hashes": [
+                "sha256:43da89427bdf18bf07f1164c6d415750693b4d50e28fc9b68de706245147b9dd",
+                "sha256:e426c3b587bd58c482f0b7fe6145ff4ac7ae6c82673fc656f489719abca6f4cb"
+            ],
+            "index": "pypi",
+            "version": "==3.1.0"
         },
         "idna": {
             "hashes": [
@@ -254,6 +269,13 @@
                 "sha256:8f3cd2e254d8f793e7f3d6d9df77b92252b52637291d0f0da013c76ea2724b6c"
             ],
             "version": "==1.14.0"
+        },
+        "smmap": {
+            "hashes": [
+                "sha256:171484fe62793e3626c8b05dd752eb2ca01854b0c55a1efc0dc4210fccb65446",
+                "sha256:5fead614cf2de17ee0707a8c6a5f2aa5a2fc6c698c70993ba42f515485ffda78"
+            ],
+            "version": "==3.0.1"
         },
         "snap-micro": {
             "hashes": [

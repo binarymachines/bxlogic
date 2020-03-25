@@ -8,6 +8,7 @@ verify_ssl = true
 [packages]
 snap-micro = "*"
 mercury-toolkit = "*"
+gitpython = "*"
 
 [requires]
 python_version = "3.6"

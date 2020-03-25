@@ -7,7 +7,8 @@ from snap import snap
 from snap import core
 from snap.loggers import transform_logger as log
 from sqlalchemy.sql import text
-#import constants
+import git
+import constants as const
 
 
 def copy_fields_from(source_dict, *fields):
@@ -74,7 +75,9 @@ def ok_status(message, **kwargs):
 
 
 def ping_func(input_data, service_objects, **kwargs):
-    return core.TransformStatus(ok_status('The BXLOGIC web listener is alive.'))
+    repo = git.Repo(search_parent_directories=True)
+    sha = repo.head.object.hexsha
+    return core.TransformStatus(ok_status('The BXLOGIC web listener is alive.', commit_id=sha))
 
 
 def new_courier_func(input_data, service_objects, **kwargs):
