@@ -70,6 +70,12 @@ data_shapes:
   default:
     fields:
 
+  poll_job_status_shape:
+    fields:
+
+  update_job_log_shape:
+    fields:
+
   new_courier_shape:
     fields:
       - name: first_name
@@ -193,6 +199,17 @@ transforms:
     method:             POST
     input_shape:        new_job_shape
     output_mimetype:    application/json
+
+  poll_job_status:
+    route:              /jobstatus
+    method:             GET
+    input_shape:        poll_job_status_shape
+    output_mimetype:    application/json
+
+  update_job_log:
+    route:              /joblog
+    method:             POST
+    input_shape:        update_job_log_shape
 
   sms_responder:
     route:              /sms

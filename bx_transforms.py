@@ -187,7 +187,10 @@ def new_job_func(input_data, service_objects, **kwargs):
 
     pipeline_svc = service_objects.lookup('job_pipeline')
     s3_svc = service_objects.lookup('s3')
-    pipeline_svc.post_job_notice(raw_record['job_tag'], s3_svc, message='testing job service')
+    pipeline_svc.post_job_notice(raw_record['job_tag'],
+                                 s3_svc, 
+                                 message='testing job service',
+                                 available_couriers=['9174176968'])
 
     return core.TransformStatus(ok_status('new Job created', data=raw_record))
 

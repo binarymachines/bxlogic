@@ -20,6 +20,8 @@ from sqlalchemy import create_engine
 from sqlalchemy import MetaData
 from sqlalchemy_utils import UUIDType
 
+from twilio.rest import Client
+
 
 POSTGRESQL_SVC_PARAM_NAMES = [
     'host',
@@ -60,6 +62,24 @@ class JobPipelineService(object):
         job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, job_tag)
         s3_svc.upload_json(kwargs, self.job_bucket_name, job_request_s3_key)
         
+
+class SMSService(object):
+    def __init__(self, **kwargs):
+        account_sid = kwargs['account_sid']
+        auth_token = kwargs['auth_token']
+        self.source_number = kwargs['source_mobile_number']
+        self.client = Client(account_sid, auth_token)
+
+
+    def send_sms(self, mobile_number, message):
+        message = self.client.messages.create(
+            to='+1%s' % mobile_number,
+            from_='+1%s' % self.source_number,
+            body=message
+        )
+
+        return message.sid
+
 
 class PostgreSQLService(object):
     def __init__(self, **kwargs):
@@ -223,3 +243,77 @@ class S3Service(object):
     def download_json(self, bucket_name, s3_key_string):
         obj = self.s3client.get_object(Bucket=bucket_name, Key=s3_key_string)
         return json.loads(obj['Body'].read().decode('utf-8'))
+
+
+
+class APIError(Exception):
+    def __init__(self, url, method, status_code):
+        super().__init__(self, 
+                       'Error sending %s request to URL %s: status code %s' % (method, url, status_code))
+
+
+APIEndpoint = namedtuple('APIEndpoint', 'host port path method')
+
+class BXLogicAPIService(object):
+    def __init__(self, **kwargs):
+        kwreader = common.KeywordArgReader('host', 'port')
+        kwreader.read(**kwargs)
+        self.hostname = kwreader.get_value('host')
+        self.port = int(kwreader.get_value('port'))
+
+        self.poll_job = APIEndpoint(host=self.hostname, port=self.port, path='job', method='GET')
+        self.update_job_status = APIEndpoint(host=self.hostname, port=self.port, path='jobstatus', method='POST')
+        self.update_job_log = APIEndpoint(host=self.hostname, port=self.port, path='joblog', method='POST')
+
+
+    def endpoint_url(self, api_endpoint, **kwargs):
+        if kwargs.ssl == True:
+            scheme = 'https'
+        else:
+            scheme = 'http'
+
+        url = '{scheme}://{host}:{port}'.format(scheme=scheme, host=api_endpoint.host, port=api_endpoint.port)
+        return os.path.join(url, api_endpoint.path)
+
+
+    def _call_endpoint(self, endpoint, payload, **kwargs):        
+        url_path = self.endpoint_url(endpoint)
+        if endpoint.method == 'GET':                        
+            print('calling endpoint %s using GET with payload %s...' % (url_path, payload))
+            return requests.get(url_path, params=payload)
+        if endpoint.method == 'POST':
+            print('calling endpoint %s using POST with payload %s...' % (url_path, payload))
+            return requests.post(url_path, data=payload)
+
+
+    def notify_job_completed(self, job_tag, **kwargs):
+        print('### signaling completion for job tag %s' % job_tag)
+        payload = {'job_tag': job_tag, 'status': 'completed'}
+        response = self._call_endpoint(self.update_job_status,
+                                       payload)
+        if not response:
+            raise APIError(self.endpoint_url(self.update_job_status),
+                           self.update_job_status.method,
+                           response.status_code)
+
+
+    def notify_job_canceled(self, job_tag, **kwargs):
+        print('### --- signaling cancellation for job tag %s' % job_tag)
+        response = self._call_endpoint(self.update_job_status,
+                                       {'job_tag': job_tag,
+                                        'status': 'canceled'})
+        if not response:
+            raise APIError(self.endpoint_url(self.update_job_status),
+                           self.update_job_status.method,
+                           response.status_code)
+
+    
+    def send_log_msg(self, job_tag, raw_message):
+        print('### sending message to joblog for tag %s' % job_tag)
+        message = urllib.parse.quote(raw_message)
+        response = self._call_endpoint(self.update_job_log,
+                                       {'job_tag': job_tag,
+                                        'log_message': message})
+
+        # fire and forget -- don't bother raising an exception if this doesn't succeed   
+

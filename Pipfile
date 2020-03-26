@@ -9,6 +9,7 @@ verify_ssl = true
 snap-micro = "*"
 mercury-toolkit = "*"
 gitpython = "*"
+twilio = "*"
 
 [requires]
 python_version = "3.6"
