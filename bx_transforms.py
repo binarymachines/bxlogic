@@ -184,6 +184,11 @@ def new_job_func(input_data, service_objects, **kwargs):
         job_id = job.id
     
     raw_record['id'] = job_id
+
+    pipeline_svc = service_objects.lookup('job_pipeline')
+    s3_svc = service_objects.lookup('s3')
+    pipeline_svc.post_job_notice(raw_record['job_tag'], s3_svc, message='testing job service')
+
     return core.TransformStatus(ok_status('new Job created', data=raw_record))
 
 
@@ -198,6 +203,21 @@ def new_client_func(input_data, service_objects, **kwargs):
 
     input_data['id'] = client_id
     return core.TransformStatus(ok_status('new Client created', data=input_data))
+
+
+def sms_responder_func(input_data, service_objects, **kwargs):
+    print('###------ SMS payload:')
+    
+    source_number = input_data['From']
+    message_body = input_data['Body']
+
+    print('###------ Received message "%s" from mobile number [%s].' % (message_body, source_number))
+
+    mobile_number = normalize_mobile_number(source_number)
+
+
+    return core.TransformStatus(ok_status('SMS event received'))
+
 
 
 

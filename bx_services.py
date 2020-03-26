@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 
 import os, sys
-import yaml
-from snap import common
+import json
 from collections import namedtuple
 from contextlib import contextmanager
 import datetime
+
+from snap import common
+
+import yaml
 import boto3
 import sqlalchemy as sqla
 from sqlalchemy.ext.automap import automap_base
@@ -26,7 +29,11 @@ POSTGRESQL_SVC_PARAM_NAMES = [
     'password'
 ]
 
-SuspensionEvent = namedtuple('SuspensionEvent', 'user date')
+PIPELINE_SVC_PARAM_NAMES = [
+    'job_bucket_name',
+    'posted_jobs_folder',
+    'accepted_jobs_folder'
+]
 
 MONTH_INDEX = 0
 DAY_INDEX = 1
@@ -40,27 +47,19 @@ def parse_date(date_string):
                          tokens[DAY_INDEX])
 
 
-class BusinessEventDB(object):
+class JobPipelineService(object):
     def __init__(self, **kwargs):
-
-        location = kwargs['location']
-        datafile = kwargs['datafile']
-        datapath = os.path.join(location, datafile)
-
-        self.db = {}
-        self.data = None
-        with open(datapath, 'r') as f:
-            self.data = yaml.safe_load(f)
-
-        for s in self.data['suspension_events']:
-            self.db[s['user']] = SuspensionEvent(user=s['user'], date=parse_date(s['date']))
-
-        #print(self.db, file=sys.stderr)
+        kwreader = common.KeywordArgReader(*PIPELINE_SVC_PARAM_NAMES)
+        kwreader.read(**kwargs)
+        self.job_bucket_name = kwargs['job_bucket_name']
+        self.posted_jobs_folder = kwargs['posted_jobs_folder']
+        self.accepted_jobs_folder = kwargs['accepted_jobs_folder']
 
 
-    def find_suspension_event(self, username):
-        return self.db.get(username)
-
+    def post_job_notice(self, job_tag, s3_svc, **kwargs):
+        job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, job_tag)
+        s3_svc.upload_json(kwargs, self.job_bucket_name, job_request_s3_key)
+        
 
 class PostgreSQLService(object):
     def __init__(self, **kwargs):
@@ -73,6 +72,7 @@ class PostgreSQLService(object):
         self.username = kwargs['username']
         self.password = kwargs['password']        
         self.schema = kwargs['schema']
+        self.max_connect_retries = int(kwargs.get('max_connect_retries') or 3)
         self.metadata = None
         self.engine = None
         self.session_factory = None
@@ -89,7 +89,7 @@ class PostgreSQLService(object):
         
         retries = 0
         connected = False
-        while not connected and retries < 3:
+        while not connected and retries < self.max_connect_retries:
             try:
                 self.engine = sqla.create_engine(db_url, echo=False)
                 self.metadata = MetaData(schema=self.schema)
@@ -164,7 +164,6 @@ class S3Key(object):
 	    return os.path.join('s3://', self.bucket, self.full_name)
 
 
-
 class S3Service(object):
     def __init__(self, **kwargs):
         kwreader = common.KeywordArgReader('local_temp_path', 'region')
@@ -187,7 +186,8 @@ class S3Service(object):
             self.aws_access_key_id = kwargs.get('aws_key_id')
             self.aws_secret_access_key = kwargs.get('aws_secret_key')
             if not self.aws_secret_access_key or not self.aws_access_key_id:
-                raise Exception(s3_auth_error_mesage)           
+                raise Exception('S3 authorization failed. Please check your credentials.')     
+
             self.s3client = boto3.client('s3',
                                          aws_access_key_id=self.aws_access_key_id,
                                          aws_secret_access_key=self.aws_secret_access_key)
@@ -219,17 +219,7 @@ class S3Service(object):
         self.s3client.put_object(Body=bytes_obj, Bucket=bucket_name, Key=s3_key)
         return s3_key
     
-    '''
-    def download_object(self, bucket_name, s3_key_string):
-        #s3_object_key = S3Key(s3_key_string)
-        local_filename = os.path.join(self.local_tmp_path, s3_object_key.object_name)
-        with open(local_filename, "wb") as f:
-            self.s3client.download_fileobj(bucket_name, s3_object_key.full_name, f)
-        return local_filename
-    '''
 
     def download_json(self, bucket_name, s3_key_string):
-        #s3_object_key = S3Key(s3_key_string)
-
         obj = self.s3client.get_object(Bucket=bucket_name, Key=s3_key_string)
         return json.loads(obj['Body'].read().decode('utf-8'))

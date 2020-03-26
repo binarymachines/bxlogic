@@ -70,6 +70,7 @@ new_job_shape.add_field('payment_method', 'str', True)
 new_job_shape.add_field('items', 'str', True)
 new_job_shape.add_field('delivery_window_open', 'str', False)
 new_job_shape.add_field('delivery_window_close', 'str', False)
+default = core.InputShape("default")
 
 #-- transforms ----
 
@@ -77,6 +78,7 @@ xformer.register_transform('ping', default, bx_transforms.ping_func, 'applicatio
 xformer.register_transform('new_courier', new_courier_shape, bx_transforms.new_courier_func, 'application/json')
 xformer.register_transform('new_client', new_client_shape, bx_transforms.new_client_func, 'application/json')
 xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func, 'application/json')
+xformer.register_transform('sms_responder', default, bx_transforms.sms_responder_func, 'text/json')
 
 #-- endpoints -----------------
 
@@ -178,6 +180,33 @@ def new_job():
 
                 
         output_mimetype = xformer.target_mimetype_for_transform('new_job')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/sms', methods=['POST'])
+def sms_responder():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('sms_responder', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('sms_responder')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)

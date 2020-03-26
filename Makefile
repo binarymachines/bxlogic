@@ -8,3 +8,4 @@ regen:
 
 init_db:
 	cat sql/bxlogic_ddl.sql | pgexec --target bxlogic_db --db binary_test -s
+	cat sql/bxlogic_initial_data.sql | pgexec --target bxlogic_db --db binary_test -s

@@ -11,8 +11,7 @@ globals:
   project_directory:           $BXLOGIC_HOME
   service_module:              bx_services
   transform_function_module:   bx_transforms
-  decoder_module:              bx_decode
-  deployment_type:             
+  decoder_module:              bx_decode            
 
 
 service_objects:
@@ -36,6 +35,36 @@ service_objects:
         
         - name: password
           value: $PGSQL_PASSWORD
+
+  job_pipeline:
+    class: JobPipelineService
+    init_params:
+        - name: job_bucket_name
+          value: bxlogic.binarymachines.io
+
+        - name: posted_jobs_folder
+          value: posted
+
+        - name: accepted_jobs_folder
+          value: accepted
+
+  s3:
+    class: S3Service
+    init_params:
+      - name: region
+        value: us-east-1
+
+      - name: auth_via_iam
+        value: False
+
+      - name: local_temp_path
+        value: /tmp
+
+      - name: aws_key_id
+        value: $AWS_ACCESS_KEY_ID
+
+      - name: aws_secret_key
+        value: $AWS_SECRET_ACCESS_KEY
 
 data_shapes:
   default:
@@ -165,6 +194,11 @@ transforms:
     input_shape:        new_job_shape
     output_mimetype:    application/json
 
+  sms_responder:
+    route:              /sms
+    method:             POST
+    input_shape:        default
+    output_mimetype:    text/json
 
 decoders:
   application/json; charset=utf-8: decode_json
