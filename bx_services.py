@@ -58,9 +58,10 @@ class JobPipelineService(object):
         self.accepted_jobs_folder = kwargs['accepted_jobs_folder']
 
 
-    def post_job_notice(self, job_tag, s3_svc, **kwargs):
-        job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, job_tag)
-        s3_svc.upload_json(kwargs, self.job_bucket_name, job_request_s3_key)
+    def post_job_notice(self, tag, s3_svc, **kwargs):
+        job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
+        payload = kwargs
+        s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
         
 
 class SMSService(object):
@@ -68,13 +69,24 @@ class SMSService(object):
         account_sid = kwargs['account_sid']
         auth_token = kwargs['auth_token']
         self.source_number = kwargs['source_mobile_number']
+
+        if not account_sid:
+            raise Exception('Missing Twilio account SID var.')
+
+        if not auth_token:
+            raise Exception('Missing Twilio auth token var.')
+
         self.client = Client(account_sid, auth_token)
 
 
     def send_sms(self, mobile_number, message):
+
+        print('###--------- sending message body via SMS from %s: ' % self.source_number)
+        print(message)
+
         message = self.client.messages.create(
             to='+1%s' % mobile_number,
-            from_='+1%s' % self.source_number,
+            from_=self.source_number,
             body=message
         )
 

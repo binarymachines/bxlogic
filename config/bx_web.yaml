@@ -1,7 +1,6 @@
 # 
 # YAML init file for BXLOGIC web listener
 #
-#
 
 globals:
   bind_host:                   0.0.0.0
@@ -72,9 +71,19 @@ data_shapes:
 
   poll_job_status_shape:
     fields:
+      - name: job_tag
+        datatype: str
+        required: True
 
   update_job_log_shape:
     fields:
+      - name: job_tag
+        datatype: str
+        required: True
+
+      - name: message
+        datatype: str
+        required: True
 
   new_courier_shape:
     fields:
@@ -120,6 +129,21 @@ data_shapes:
         datatype: str
         required: False
 
+  couriers_by_status_shape:
+    fields:
+      - name: status
+        datatype: int
+        required: True
+
+  update_courier_status_shape:
+    fields:
+      - name: id
+        datatype: str
+        required: True
+
+      - name: status
+        datatype: int
+        required: True
 
   new_job_shape:
     fields:
@@ -188,6 +212,18 @@ transforms:
     input_shape:        new_courier_shape
     output_mimetype:    application/json
 
+  update_courier_status:
+    route:              /courier-status
+    method:             POST
+    input_shape:        update_courier_status_shape
+    output_mimetype:    application/json
+
+  couriers_by_status:
+    route:              /couriers
+    method:             GET
+    input_shape:        couriers_by_status_shape
+    output_mimetype:    application/json
+
   new_client:
     route:              /client
     method:             POST
@@ -210,6 +246,7 @@ transforms:
     route:              /joblog
     method:             POST
     input_shape:        update_job_log_shape
+    output_mimetype:    application/json
 
   sms_responder:
     route:              /sms

@@ -1,0 +1,51 @@
+globals:
+    project_home: $BXLOGIC_HOME
+    service_module: bx_services
+    consumer_module: bx_sqs_consumers
+
+service_objects:
+  job_mgr_api:
+    class: BXLogicAPIService
+    init_params:
+      - name: host
+        value: $BXLOGIC_API_HOST
+      - name: port
+        value: 9050
+
+  sms:
+    class: SMSService
+    init_params:
+      - name: account_sid
+        value: $TWILIO_ACCT_SID
+
+      - name: auth_token
+        value: $TWILIO_AUTH_TOKEN
+
+      - name: source_mobile_number
+        value: "9178102234"
+
+  s3:
+    class: S3Service
+    init_params:
+      - name: region
+        value: us-east-1
+
+      - name: auth_via_iam
+        value: False
+
+      - name: local_temp_path
+        value: /tmp
+
+      - name: aws_key_id
+        value: $AWS_ACCESS_KEY_ID
+
+      - name: aws_secret_key
+        value: $AWS_SECRET_ACCESS_KEY
+
+sources:
+  bxlogic:
+      queue_url: https://sqs.us-east-1.amazonaws.com/543680801712/bxlogic_jobs
+      region: us-east-1
+      handler: msg_handler
+      polling_interval_seconds: 1
+      max_msgs_per_cycle: 1

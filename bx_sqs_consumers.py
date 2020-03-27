@@ -36,9 +36,9 @@ def get_handler_for_job_type(job_type):
     return handler_func
     
 
-def msg_handler(message, receipt_handle, service_tbl):
+def msg_handler(message, receipt_handle, service_registry):
 
-    service_registry = common.ServiceObjectRegistry(service_tbl)
+    #service_registry = common.ServiceObjectRegistry(service_tbl)
     s3_svc = service_registry.lookup('s3')
     print('### Inside SQS message handler function.')
     print("### message follows:")
@@ -61,13 +61,13 @@ def msg_handler(message, receipt_handle, service_tbl):
         s3key = S3Key(bucket_name, object_key)
         jsondata = None
         try:
-            jobdata = s3_svc.download_json(bucket_name, object_key)
+            jsondata = s3_svc.download_json(bucket_name, object_key)
             print('### JSON payload data:')
-            print(common.jsonpretty(jobdata))
+            print(common.jsonpretty(jsondata))
 
             sms_service = service_registry.lookup('sms')
-            for courier_num in jobdata['available_couriers']:
-                sms_service.send_sms(courier_num, 'There is a new job in the system.')
+            for courier_num in jsondata['available_couriers']:
+                sms_service.send_sms(courier_num, jsondata['job_data']['job_tag'])
 
         except Exception as err:
             print('Error handling JSON job data from URI %s.' % s3key.uri)

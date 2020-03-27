@@ -100,18 +100,18 @@ def main(args):
             
             try:
                 # TODO: can we pickle a ServiceObjectRegistry?
-                p = Process(target=msg_handler_func, args=(message, receipt_handle, service_tbl))
+                p = Process(target=msg_handler_func, args=(message, receipt_handle, service_registry))
                 p.start()
                 child_procs.append(p)
                 print('### Queued message-handling subprocess with PID %s.' % p.pid, file=sys.stderr)
 
                 # Delete received message from queue
-                '''
+                
                 sqs.delete_message(
                     QueueUrl=queue_url,
                     ReceiptHandle=receipt_handle
                 )
-                '''
+                
                 #print('### Received and deleted message with receipt: %s' % receipt_handle, file=sys.stderr)
             except Exception as err:
                 print('!!! Error processing message with receipt: %s' % receipt_handle, file=sys.stderr)
