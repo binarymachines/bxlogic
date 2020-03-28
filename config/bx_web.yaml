@@ -65,6 +65,18 @@ service_objects:
       - name: aws_secret_key
         value: $AWS_SECRET_ACCESS_KEY
 
+  sms:
+    class: SMSService
+    init_params:
+      - name: account_sid
+        value: $TWILIO_ACCT_SID
+
+      - name: auth_token
+        value: $TWILIO_AUTH_TOKEN
+
+      - name: source_mobile_number
+        value: "9178102234"
+
 data_shapes:
   default:
     fields:
@@ -253,6 +265,13 @@ transforms:
     method:             POST
     input_shape:        default
     output_mimetype:    text/json
+
+  test:
+    route:              /foo
+    method:             GET
+    input_shape:        default
+    output_mimetype:    application/json
+
 
 decoders:
   application/json; charset=utf-8: decode_json

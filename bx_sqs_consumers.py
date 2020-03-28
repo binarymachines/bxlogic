@@ -66,8 +66,8 @@ def msg_handler(message, receipt_handle, service_registry):
             print(common.jsonpretty(jsondata))
 
             sms_service = service_registry.lookup('sms')
-            for courier_num in jsondata['available_couriers']:
-                sms_service.send_sms(courier_num, jsondata['job_data']['job_tag'])
+            for courier_record in jsondata['available_couriers']:
+                sms_service.send_sms(courier_record['mobile_number'], jsondata['job_data']['job_tag'])
 
         except Exception as err:
             print('Error handling JSON job data from URI %s.' % s3key.uri)

@@ -4,7 +4,8 @@
 import uuid
 import json
 import datetime
-from snap import snap
+from collections import namedtuple
+from snap import snap, common
 from snap import core
 from snap.loggers import transform_logger as log
 from sqlalchemy.sql import text
@@ -30,6 +31,39 @@ assignments.
 
 '''
 
+SMSCommandSpec = namedtuple('SMSCommandSpec', 'command definition synonyms')
+
+SMS_COMMAND_SPECS = {
+    'gtg': SMSCommandSpec(command='gtg', definition='Good to go (accept a delivery job)', synonyms=['g']),
+    'det': SMSCommandSpec(command='det', definition='Detail (find out what a particular job entails)', synonyms=[]),
+    'ert': SMSCommandSpec(command='ert', definition='En route to either pick up or deliver for a job', synonyms=['e']),
+    'cce': SMSCommandSpec(command='cce', definition='Cancel (courier can no longer complete an accepted job)', synonyms=['c']),
+    'fin': SMSCommandSpec(command='fin', definition='Finished a delivery', synonyms=['f']),
+    '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[]),
+    'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?']),
+    'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[]),
+    'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[])
+}
+
+SMS_RESPONSES = {
+    'assign_job': 'Thank you for responding -- job tag {tag} has been assigned to you.',
+    'assigned_to_other': 'Another courier in the network responded first, but thank you for stepping up.'
+}
+
+REPLY_ASSIGN_JOB_TPL = 'Thank you for responding -- job tag {tag} has been assigned to you.'
+REPLY_ASSIGNED_TO_OTHER = 'Another courier in the network responded first, but thank you for stepping up.'
+REPLY_NOT_IN_NETWORK = "You have sent a control message to our logistics network, but you haven't been registered as one of our couriers."
+REPLY_GET_INVOLVED_TPL = "If you'd like to become a courier, please send email to {contact_email} and someone will contact you."
+REPLY_CMD_FORMAT = "You have texted a command that requires a job tag. Text the job tag, a space, and then the command."
+REPLY_CMD_HELP_AVAILABLE = 'Text "help" to the target number to get a list of command strings and what they do.'
+
+
+def generate_assign_job_reply(**kwargs):
+    return REPLY_ASSIGN_JOB_TPL.format(**kwargs)
+
+def generate_get_involved_reply(**kwargs):
+    return REPLY_GET_INVOLVED_TPL.format(**kwargs)
+
 
 def copy_fields_from(source_dict, *fields):
     output_dict = {}
@@ -46,7 +80,7 @@ def generate_job_tag(name):
 
 
 def normalize_mobile_number(number_string):
-    return number_string.lstrip('1').replace('(', '').replace(')', '').replace('-', '').replace('.', '').replace(' ', '')
+    return number_string.lstrip('+').lstrip('1').replace('(', '').replace(')', '').replace('-', '').replace('.', '').replace(' ', '')
 
 
 class ObjectFactory(object):
@@ -129,6 +163,16 @@ def lookup_couriers_by_status(status, session, db_svc):
             'mobile_number': record.mobile_number
             })
     return couriers
+
+
+def lookup_available_job_by_tag(tag, session, db_svc):
+    Jobdata = db_svc.Base.classes.job_data
+    
+    try:
+        job = session.query(Jobdata).filter(Jobdata.job_tag == tag).one()
+        return job
+    except NoResultFound:
+        return None
 
 
 def lookup_courier_by_id(courier_id, session, db_svc):
@@ -262,17 +306,168 @@ def new_client_func(input_data, service_objects, **kwargs):
     return core.TransformStatus(ok_status('new Client created', data=input_data))
 
 
-def sms_responder_func(input_data, service_objects, **kwargs):
-    print('###------ SMS payload:')
+SystemCommand = namedtuple('SystemCommand', 'job_tag cmdspec modifiers')
+
+def lookup_sms_command(cmd_string):
+    for key, cmd_spec in SMS_COMMAND_SPECS.items():
+        if cmd_string == key:
+            return cmd_spec
+        if cmd_string in cmd_spec.synonyms:
+            return cmd_spec
+
+    return None
+
+
+class UnrecognizedSMSCommand(Exception):
+    def __init__(self, cmd_string):
+        super().__init__(self, 'Invalid SMS command %s' % cmd_string)
+
+
+def parse_sms_message_body(raw_body):
+    job_tag = None
+    command_string = None
+    modifiers = []
     
+    # make sure there's no leading whitespace, then see what we've got
+    body = raw_body.lstrip('+')
+
+    if body.startswith('bxlog-'):
+        # remove the URL encoded whitespace chars;
+        # remove any trailing/leading space chars as well
+        tokens = [token.lstrip('+').rstrip('+') for token in body.split('+') if token]
+
+        print('message tokens: %s' % common.jsonpretty(tokens))
+
+        job_tag = tokens[0]
+        if len(tokens) == 2:
+            command_string = tokens[1].lower()
+
+        if len(tokens) > 2:
+            command_string = tokens[1].lower()
+            modifiers = tokens[2:]
+    else:
+        tokens = [token.lstrip('+').rstrip('+') for token in body.split('+') if token]
+        command_string = tokens[0].lower()
+        modifiers = tokens[1:]
+
+    print('looking up SMS command: %s' % command_string)
+    cmd_spec = lookup_sms_command(command_string)
+    if not cmd_spec:
+        # we do not recognize this command
+        raise UnrecognizedSMSCommand(command_string)
+    
+    return SystemCommand(job_tag=job_tag, cmdspec=cmd_spec, modifiers=modifiers)
+    
+
+def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
+    Courier = db_svc.Base.classes.couriers
+    try:
+        return session.query(Courier).filter(Courier.mobile_number == mobile_number).one()
+    except:
+        return None
+
+
+def compile_help_string():
+    lines = []
+    for key, cmd_spec in SMS_COMMAND_SPECS.items():
+        lines.append('%s: %s' % (key, cmd_spec.definition))
+    
+    return '\n\n'.join(lines)
+
+
+def handle_on_duty(cmd_object, service_registry, **kwargs):
+    return '''
+    Welcome to the on-call roster. Reply to job tags with the tag and "gtg" to accept a job. Text "hlp" or "?" at any time to see the command codes.'''
+
+
+def handle_off_duty(cmd_object, service_registry, **kwargs):
+    return 'You are now leaving the on-call roster. Thank you for your service. Have a good one!'
+
+
+def handle_accept_job(cmd_object, service_registry, **kwargs):
+    # TODO: arbitrate between multiple acceptors
+    return generate_assign_job_reply(tag=cmd_object.job_tag)
+
+
+def handle_help(cmd_object, service_registry, **kwargs):
+    return compile_help_string()
+
+
+def handle_job_details(cmd_object, service_registry, **kwargs):
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        job = lookup_available_job_by_tag(cmd_object.job_tag, session, db_svc)
+        if not job:
+            return 'The job with tag "%s" is either not in the system, or has already been scheduled.' % cmd_object.job_tag
+        
+        lines = []
+        lines.append('pickup address: %s' % job.pickup_address)
+        lines.append('pickup borough: %s' % job.pickup_borough)
+        lines.append('pickup neighborhood: %s' % job.pickup_neighborhood)
+        lines.append('pickup zipcode: %s' % job.pickup_zip)
+
+        lines.append('delivery address: %s' % job.pickup_address)
+        lines.append('delivery borough: %s' % job.delivery_borough)
+        lines.append('delivery zipcode: %s' % job.delivery_zip)
+        lines.append('items: %s' % job.items)
+
+        return '\n\n'.join(lines)
+
+class DialogEngine(object):
+    def __init__(self):
+        self.msg_dispatch_tbl = {}
+
+
+    def register_cmd_spec(self, sms_command_spec, handler_func):
+        self.msg_dispatch_tbl[str(sms_command_spec)] = handler_func
+
+
+    def reply_sms_command(self, sys_cmd, service_registry):
+        handler = self.msg_dispatch_tbl.get(str(sys_cmd.cmdspec))
+        if not handler:
+            return 'No handler registered in SMS DialogEngine for command %s.' % sys_cmd.cmdspec.command
+
+        return handler(sys_cmd, service_registry)
+
+
+def sms_responder_func(input_data, service_objects, **kwargs):
+    db_svc = service_objects.lookup('postgres')
+    sms_svc = service_objects.lookup('sms')
+
+    engine = DialogEngine()
+    engine.register_cmd_spec(SMS_COMMAND_SPECS['gtg'], handle_accept_job)
+    engine.register_cmd_spec(SMS_COMMAND_SPECS['on'], handle_on_duty)
+    engine.register_cmd_spec(SMS_COMMAND_SPECS['off'], handle_off_duty)
+    engine.register_cmd_spec(SMS_COMMAND_SPECS['hlp'], handle_help)
+    engine.register_cmd_spec(SMS_COMMAND_SPECS['det'], handle_job_details)
+
+    print('###------ SMS payload:')
     source_number = input_data['From']
     message_body = input_data['Body']
-
     print('###------ Received message "%s" from mobile number [%s].' % (message_body, source_number))
 
     mobile_number = normalize_mobile_number(source_number)
-    return core.TransformStatus(ok_status('SMS event received'))
 
+    with db_svc.txn_scope() as session:
+        courier = lookup_courier_by_mobile_number(mobile_number, session, db_svc)
+        if not courier:
+            print('Courier with mobile number %s not found.' % mobile_number)
+            sms_svc.send_sms(mobile_number, REPLY_NOT_IN_NETWORK)
+        else:
+            try:
+                sys_command = parse_sms_message_body(message_body)
+                print('#----- Resolved system command: %s' % str(sys_command))
+
+                response = engine.reply_sms_command(sys_command, service_objects)
+                sms_svc.send_sms(mobile_number, response)
+
+                return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=sys_command))
+
+            except UnrecognizedSMSCommand as err:
+                print('#----- Unrecognized system command: in message body: %s' % message_body)
+                sms_svc.send_sms(mobile_number, compile_help_string())
+                return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
+    
 
 def poll_job_status_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
@@ -318,7 +513,6 @@ def update_courier_status_func(input_data, service_objects, **kwargs):
 
     return core.TransformStatus(ok_status('update courier status', updated=did_update, id=courier_id, duty_status=new_status))
 
-    
 
-
-
+def test_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('test_func')

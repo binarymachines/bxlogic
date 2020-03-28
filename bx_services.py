@@ -62,6 +62,12 @@ class JobPipelineService(object):
         job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
         payload = kwargs
         s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
+
+
+    def post_job_bid(self, tag, courier_id, s3_svc, **kwargs):
+        job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
+        payload = kwargs
+        s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
         
 
 class SMSService(object):
@@ -80,13 +86,12 @@ class SMSService(object):
 
 
     def send_sms(self, mobile_number, message):
-
-        print('###--------- sending message body via SMS from %s: ' % self.source_number)
+        print('### sending message body via SMS from [%s] to [%s] :' % (self.source_number, mobile_number))
         print(message)
 
         message = self.client.messages.create(
             to='+1%s' % mobile_number,
-            from_=self.source_number,
+            from_='+1%s' % self.source_number,
             body=message
         )
 

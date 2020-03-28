@@ -81,6 +81,7 @@ update_job_log_shape = core.InputShape("update_job_log_shape")
 update_job_log_shape.add_field('job_tag', 'str', True)
 update_job_log_shape.add_field('message', 'str', True)
 default = core.InputShape("default")
+default = core.InputShape("default")
 
 #-- transforms ----
 
@@ -93,6 +94,7 @@ xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func,
 xformer.register_transform('poll_job_status', poll_job_status_shape, bx_transforms.poll_job_status_func, 'application/json')
 xformer.register_transform('update_job_log', update_job_log_shape, bx_transforms.update_job_log_func, 'application/json')
 xformer.register_transform('sms_responder', default, bx_transforms.sms_responder_func, 'text/json')
+xformer.register_transform('test', default, bx_transforms.test_func, 'application/json')
 
 #-- endpoints -----------------
 
@@ -329,6 +331,33 @@ def sms_responder():
 
                 
         output_mimetype = xformer.target_mimetype_for_transform('sms_responder')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/foo', methods=['GET'])
+def test():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                                
+        input_data.update(request.args)
+        
+        transform_status = xformer.transform('test',
+                                             input_data,
+                                             headers=request.headers)
+                
+        output_mimetype = xformer.target_mimetype_for_transform('test')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
