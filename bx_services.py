@@ -9,6 +9,7 @@ import datetime
 from snap import common
 
 import yaml
+import requests
 import boto3
 import sqlalchemy as sqla
 from sqlalchemy.ext.automap import automap_base
@@ -49,6 +50,8 @@ def parse_date(date_string):
                          tokens[DAY_INDEX])
 
 
+ALLOWED_BIDDING_LIMIT_TYPES = ['time_seconds', 'num_bids']
+
 class JobPipelineService(object):
     def __init__(self, **kwargs):
         kwreader = common.KeywordArgReader(*PIPELINE_SVC_PARAM_NAMES)
@@ -56,11 +59,22 @@ class JobPipelineService(object):
         self.job_bucket_name = kwargs['job_bucket_name']
         self.posted_jobs_folder = kwargs['posted_jobs_folder']
         self.accepted_jobs_folder = kwargs['accepted_jobs_folder']
+        self.bid_window_limit_type = kwargs['bid_window_limit_type']
+
+        if self.bid_window_limit_type not in ALLOWED_BIDDING_LIMIT_TYPES:
+            raise Exception('Invalid bidding limit type %s. Allowed types are %s.' % 
+                            (self.bid_window_limit_type, ALLOWED_BIDDING_LIMIT_TYPES))
+
+        self.bid_window_limit = int(kwargs['bid_window_limit'])
 
 
     def post_job_notice(self, tag, s3_svc, **kwargs):
         job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
         payload = kwargs
+        payload['bid_window'] = {
+            'limit_type': self.bid_window_limit_type,
+            'limit': self.bid_window_limit
+        }
         s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
 
 
@@ -281,10 +295,11 @@ class BXLogicAPIService(object):
         self.poll_job = APIEndpoint(host=self.hostname, port=self.port, path='job', method='GET')
         self.update_job_status = APIEndpoint(host=self.hostname, port=self.port, path='jobstatus', method='POST')
         self.update_job_log = APIEndpoint(host=self.hostname, port=self.port, path='joblog', method='POST')
+        self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bids', method='GET')
 
 
     def endpoint_url(self, api_endpoint, **kwargs):
-        if kwargs.ssl == True:
+        if kwargs.get('ssl') == True:
             scheme = 'https'
         else:
             scheme = 'http'
@@ -294,13 +309,21 @@ class BXLogicAPIService(object):
 
 
     def _call_endpoint(self, endpoint, payload, **kwargs):        
-        url_path = self.endpoint_url(endpoint)
+        url_path = self.endpoint_url(endpoint, **kwargs)
         if endpoint.method == 'GET':                        
             print('calling endpoint %s using GET with payload %s...' % (url_path, payload))
             return requests.get(url_path, params=payload)
         if endpoint.method == 'POST':
             print('calling endpoint %s using POST with payload %s...' % (url_path, payload))
             return requests.post(url_path, data=payload)
+
+
+    def get_active_job_bids(self, job_tag, **kwargs):
+        payload = {'job_tag': job_tag}
+        response = self._call_endpoint(self.poll_job_bids,
+                                       payload, 
+                                       **kwargs)
+        return response
 
 
     def notify_job_completed(self, job_tag, **kwargs):

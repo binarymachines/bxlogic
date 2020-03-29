@@ -1,7 +1,7 @@
 globals:
     project_home: $BXLOGIC_HOME
     service_module: bx_services
-    consumer_module: bx_sqs_consumers
+    consumer_module: bx_eventhandlers
 
 service_objects:
   job_mgr_api:

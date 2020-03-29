@@ -81,7 +81,8 @@ update_job_log_shape = core.InputShape("update_job_log_shape")
 update_job_log_shape.add_field('job_tag', 'str', True)
 update_job_log_shape.add_field('message', 'str', True)
 default = core.InputShape("default")
-default = core.InputShape("default")
+job_bids_shape = core.InputShape("job_bids_shape")
+job_bids_shape.add_field('job_tag', 'str', True)
 
 #-- transforms ----
 
@@ -94,7 +95,7 @@ xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func,
 xformer.register_transform('poll_job_status', poll_job_status_shape, bx_transforms.poll_job_status_func, 'application/json')
 xformer.register_transform('update_job_log', update_job_log_shape, bx_transforms.update_job_log_func, 'application/json')
 xformer.register_transform('sms_responder', default, bx_transforms.sms_responder_func, 'text/json')
-xformer.register_transform('test', default, bx_transforms.test_func, 'application/json')
+xformer.register_transform('job_bids', job_bids_shape, bx_transforms.job_bids_func, 'application/json')
 
 #-- endpoints -----------------
 
@@ -341,8 +342,8 @@ def sms_responder():
         log.error("Exception thrown: ", exc_info=1)        
         raise err
 
-@app.route('/foo', methods=['GET'])
-def test():
+@app.route('/bids', methods=['GET'])
+def job_bids():
     try:
         if app.debug:
             # dump request headers for easier debugging
@@ -353,11 +354,11 @@ def test():
                                 
         input_data.update(request.args)
         
-        transform_status = xformer.transform('test',
+        transform_status = xformer.transform('job_bids',
                                              input_data,
                                              headers=request.headers)
                 
-        output_mimetype = xformer.target_mimetype_for_transform('test')
+        output_mimetype = xformer.target_mimetype_for_transform('job_bids')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
