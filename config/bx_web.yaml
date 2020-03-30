@@ -163,7 +163,7 @@ data_shapes:
         datatype: int
         required: True
 
-  job_bids_shape:
+  job_bidders_shape:
     fields:
       - name: job_tag
         datatype: str
@@ -278,10 +278,10 @@ transforms:
     input_shape:        default
     output_mimetype:    text/json
 
-  job_bids:
-    route:              /bids
+  active_job_bidders:
+    route:              /bidders
     method:             GET
-    input_shape:        job_bids_shape
+    input_shape:        job_bidders_shape
     output_mimetype:    application/json
 
 

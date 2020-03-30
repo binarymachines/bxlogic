@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-
+import re
 import uuid
 import json
 import datetime
@@ -12,7 +12,7 @@ from sqlalchemy.sql import text
 import git
 import constants as const
 from sqlalchemy.orm.exc import NoResultFound
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 
 '''
 TODO: if a job's core information changes AFTER the job has been accepted, auto-generate message(s) for the courier
@@ -40,22 +40,25 @@ SMSGeneratorSpec = namedtuple('SMSGeneratorSpec', 'command definition specifier'
 SYSTEM_ID = 'bxlog'
 NETWORK_ID = 'ccr'
 
-SMS_COMMAND_SPECS = {
+INTEGER_RX = re.compile(r'^[0-9]+$')
+RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
+
+SMS_SYSTEM_COMMAND_SPECS = {
     'bid': SMSCommandSpec(command='bid', definition='Bid to accept a job', synonyms=[], tag_required=True),
-    'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True)
-    'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac']),
+    'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
+    'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
     'er': SMSCommandSpec(command='er', definition='En route to either pick up or deliver for a job', synonyms=[], tag_required=True),
     'can': SMSCommandSpec(command='can', definition='Cancel (courier can no longer complete an accepted job)', synonyms=[], tag_required=True),
     'fin': SMSCommandSpec(command='fin', definition='Finished a delivery', synonyms=['f'], tag_required=True),
-    '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[]),
-    'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?']),
-    'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[]),
-    'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[])
+    '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[], tag_required=False),
+    'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?'], tag_required=False),
+    'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[], tag_required=False),
+    'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[], tag_required=False)
 }
 
-SMS_GENERATOR_COMMANDS= {
-    'my': SMSGeneratorSpec(command='my', definition='List my pending jobs', specifier='.') # special command (dot notation),
+SMS_GENERATOR_COMMAND_SPECS = {
+    'my': SMSGeneratorSpec(command='my', definition='List my pending jobs', specifier='.'), # special command (dot notation),
     'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.')
 }
 
@@ -95,7 +98,7 @@ def generate_job_tag(name):
 
 def is_valid_job_tag(tag):
     # TODO: get a regex going for this
-    if not tag.startswith('bxlog_'):
+    if not tag.startswith(SYSTEM_ID):
         return False
 
     if tag.find(' ') != -1:
@@ -138,6 +141,12 @@ class ObjectFactory(object):
     def create_job_status(cls, db_svc, **kwargs):
         JobStatus = db_svc.Base.classes.job_status
         return JobStatus(**kwargs)
+
+    @classmethod
+    def create_job_bid(cls, db_svc, **kwargs):
+        JobBid = db_svc.Base.classes.job_bids
+        kwargs['write_ts'] = datetime.datetime.now()
+        return JobBid(**kwargs)
 
 
 def lookup_transport_method_ids(name_array, session, db_svc):
@@ -190,11 +199,11 @@ def lookup_couriers_by_status(status, session, db_svc):
     return couriers
 
 
-def lookup_available_job_by_tag(tag, session, db_svc):
+def lookup_job_data_by_tag(tag, session, db_svc):
     Jobdata = db_svc.Base.classes.job_data
-    
     try:
-        job = session.query(Jobdata).filter(Jobdata.job_tag == tag).one()
+        job = session.query(Jobdata).filter(and_(Jobdata.job_tag == tag,
+                                                 Jobdata.deleted_ts == None)).one()
         return job
     except NoResultFound:
         return None
@@ -212,14 +221,24 @@ def job_is_available(job_tag, session, db_svc):
     JobStatus = db_svc.Base.classes.job_status
     try:
         # status 0 is "broadcast" (available for bidding); status 1 is "accepted-partial" (more than one assignee for the job)
-        status_record = session.query(JobStatus).filter(and_(JobStatus.expired_ts is None,
+        status_record = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
                                                              JobStatus.job_tag == job_tag, 
                                                             or_(JobStatus.status == 0, JobStatus.status == 1))).one()
         return True
     except NoResultFound:
         return False                                                            
 
-        
+
+def list_available_jobs(session, db_svc):
+    jobs = []
+    JobStatus = db_svc.Base.classes.job_status
+    resultset = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
+                                                     or_(JobStatus.status == 0, JobStatus.status == 1))).all()
+    for record in resultset:
+        jobs.append(record)
+
+    return jobs
+
 
 def prepare_courier_record(input_data, session, db_svc):
     output_record = copy_fields_from(input_data, 'first_name', 'last_name', 'email')
@@ -344,10 +363,8 @@ def new_client_func(input_data, service_objects, **kwargs):
     return core.TransformStatus(ok_status('new Client created', data=input_data))
 
 
-SystemCommand = namedtuple('SystemCommand', 'job_tag cmdspec modifiers')
-
 def lookup_sms_command(cmd_string):
-    for key, cmd_spec in SMS_COMMAND_SPECS.items():
+    for key, cmd_spec in SMS_SYSTEM_COMMAND_SPECS.items():
         if cmd_string == key:
             return cmd_spec
         if cmd_string in cmd_spec.synonyms:
@@ -356,9 +373,25 @@ def lookup_sms_command(cmd_string):
     return None
 
 
+def lookup_generator_command(cmd_string):
+    for key, cmd_spec in SMS_GENERATOR_COMMAND_SPECS.items():
+        delimiter = cmd_spec.specifier
+        if cmd_string.split(delimiter)[0] == key:
+            return cmd_spec
+
+    return None
+
+
 class UnrecognizedSMSCommand(Exception):
     def __init__(self, cmd_string):
         super().__init__(self, 'Invalid SMS command %s' % cmd_string)
+
+
+SystemCommand = namedtuple('SystemCommand', 'job_tag cmdspec modifiers')
+GeneratorCommand = namedtuple('GeneratorCommand', 'cmd_string cmdspec modifiers')
+HashtagCommand = namedtuple('HashtagCommand', 'tag')
+
+CommandInput = namedtuple('CommandInput', 'cmd_type cmd_object') # command types: generator, syscommand, hashtag
 
 
 def parse_sms_message_body(raw_body):
@@ -383,10 +416,20 @@ def parse_sms_message_body(raw_body):
         if len(tokens) > 2:
             command_string = tokens[1].lower()
             modifiers = tokens[2:]
+    
+    elif body.startswith('#'):
+        return CommandInput(cmd_type='hashtag', cmd_object=Hashtag('#%s' % body[1:].lower()))
+
     else:
         tokens = [token.lstrip('+').rstrip('+') for token in body.split('+') if token]
         command_string = tokens[0].lower()
         modifiers = tokens[1:]
+
+        if lookup_generator_command(command_string):
+            print('###------------ detected GENERATOR-type command: %s' % command_string)
+            generator_spec = lookup_generator_command(command_string)
+            return CommandInput(cmd_type='generator',
+                                cmd_object=GeneratorCommand(cmd_string=command_string, cmdspec=generator_spec, modifiers=modifiers))
 
     print('looking up SMS command: %s' % command_string)
     cmd_spec = lookup_sms_command(command_string)
@@ -394,7 +437,8 @@ def parse_sms_message_body(raw_body):
         # we do not recognize this command
         raise UnrecognizedSMSCommand(command_string)
     
-    return SystemCommand(job_tag=job_tag, cmdspec=cmd_spec, modifiers=modifiers)
+    return CommandInput(cmd_type='syscommand',
+                        cmd_object=SystemCommand(job_tag=job_tag, cmdspec=cmd_spec, modifiers=modifiers))
     
 
 def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
@@ -407,25 +451,25 @@ def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
 
 def compile_help_string():
     lines = []
-    for key, cmd_spec in SMS_COMMAND_SPECS.items():
+    for key, cmd_spec in SMS_SYSTEM_COMMAND_SPECS.items():
         lines.append('%s: %s' % (key, cmd_spec.definition))
     
     return '\n\n'.join(lines)
 
 
-def handle_on_duty(cmd_object, service_registry, **kwargs):
+def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
     return '''
     Welcome to the on-call roster. Reply to job tags with the tag and "gtg" to accept a job. Text "hlp" or "?" at any time to see the command codes.'''
 
 
-def handle_off_duty(cmd_object, service_registry, **kwargs):
+def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
     return 'You are now leaving the on-call roster. Thank you for your service. Have a good one!'
 
 
-def handle_bid_for_job(cmd_object, service_registry, **kwargs):
+def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
 
     if not cmd_object.job_tag:
-        return USAGE_STRINGS[cmd_object.cmdspec]
+        return 'Bid for a job by texting the job tag, space, and "bid".' 
 
     if not is_valid_job_tag(cmd_object.job_tag):
         return REPLY_INVALID_TAG
@@ -437,7 +481,8 @@ def handle_bid_for_job(cmd_object, service_registry, **kwargs):
             return 'The job with tag:\n%s\n is not in the pool of available jobs.\nText "opn" for a list of open jobs.'
         
         # job exists and is available, so bid for it
-        bid = ObjectFactory.create_job_bid()
+        kwargs['job_tag'] = cmd_object.job_tag
+        bid = ObjectFactory.create_job_bid(db_svc, **kwargs)
         session.add(bid)
 
         return '\n'.join([
@@ -448,22 +493,22 @@ def handle_bid_for_job(cmd_object, service_registry, **kwargs):
         #job_tags = lookup_job_tags_by_status([0, 1], session, db_svc)
 
     
-def handle_accept_job(cmd_object, service_registry, **kwargs):
+def handle_accept_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: update status table
-    return 'This job <tag> is now yours.'
+    return '<placeholder for accepting a job>'
 
 
-def handle_help(cmd_object, service_registry, **kwargs):
+def handle_help(cmd_object, dlg_context, service_registry, **kwargs):
     return compile_help_string()
 
 
-def handle_job_details(cmd_object, service_registry, **kwargs):
-    if cmd_object.job_tag is None:
-        return 'To receive details on a job, text the job tag, a space, and "det"'
+def handle_job_details(cmd_object, dlg_context, service_registry, **kwargs):
+    if cmd_object.job_tag == None:
+        return 'To receive details on a job, text the job tag, a space, and "dt"'
 
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
-        job = lookup_available_job_by_tag(cmd_object.job_tag, session, db_svc)
+        job = lookup_job_data_by_tag(cmd_object.job_tag, session, db_svc)
         if not job:
             return 'The job with tag "%s" is either not in the system, or has already been scheduled.' % cmd_object.job_tag
         
@@ -481,7 +526,7 @@ def handle_job_details(cmd_object, service_registry, **kwargs):
         return '\n\n'.join(lines)
 
 
-def handle_en_route(cmd_object, service_registry, **kwargs):
+def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: update status table
     # TODO: handle missing job tag if courier has more than one job
 
@@ -496,62 +541,180 @@ def handle_en_route(cmd_object, service_registry, **kwargs):
     return '\n'.join(lines)
 
 
-def handle_cancel_job(cmd_object, service_registry, **kwargs):
+def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
     # TODO: update status table
     return "Canceling job."
     # TODO: add cancel logic
 
 
-def handle_job_finished(cmd_object, service_registry, **kwargs):
+def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
     # TODO: update status table
     return "Recording job completion for job tag %s. Thank you!" % cmd_object.job_tag
 
 
-def handle_emergency(cmd_object, service_registry, **kwargs):
+def handle_emergency(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: add broadcast logic
     return "Reporting an emergency for courier X. If this is a life-threatening emergency, please call 911"
     
 
-def handle_list_my_jobs(cmd_object, service_registry, **kwargs):
-    return "<placeholder for listing jobs assigned to this courier>"
+def generate_list_my_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    print('Specifier character is "%s"' % cmd_object.cmdspec.specifier)
 
+    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+
+    if len(tokens) == 1:
+        # show all my assigned jobs
+        return "<placeholder for listing ALL jobs assigned to this courier>"
+
+    else:
+        # show a subset of my assigned jobs
+        return "<placeholder for showing the Nth job assigned to this courier>"
+
+
+def extension_is_integer(ext_string):
+    if INTEGER_RX.match(ext_string):
+        return True
+    return False
+
+
+def extension_is_range(ext_string):
+    if RANGE_RX.match(ext_string):
+        return True
+    return False
+
+
+def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+
+    print('#--- Generating open job listing...')
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        jobs = list_available_jobs(session, db_svc)
+        if not len(jobs):
+            return 'No open jobs found.'
+
+        tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+        if len(tokens) == 1:
+            lines = []
+            index = 1
+
+            # if no specifier is present in the command string, return the entire list (with indices)
+            #TODO: segment output for very long lists
+            for job in jobs:
+                lines.append("# %d: %s" % (index, job.job_tag))
+                index += 1
+            
+            return '\n\n'.join(lines)
+        else:
+            ext = tokens[1] 
+            # the "extension" is the part of the command string immediately following the specifier character
+            # (we have defaulted to a period, but that's settable).
+            #
+            # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
+            if extension_is_integer(ext):
+                list_index=int(ext)
+
+                if list_index > len(jobs):
+                    return "You requested open job # %d, but there are only %d jobs open." % (list_index, len(jobs))
+                if list_index == 0:
+                    return "You may not request the 0th element of a list. (Nice try, C programmers.)"
+
+                list_element = jobs[list_index-1].job_tag
+                
+                # if the user is extracting a single list element (by using an integer extension), we do 
+                # one of two things. If there were no command modifiers specified, we simply return the element:
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens) 
+
+                    print('#@@@@ generated new command string: %s' % command_string)
+
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))
+                    #return 'debugging command chaining.'
+                    return dlg_engine.reply_command(chained_command, service_registry)
+
+            elif extension_is_range(ext):
+                # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
+
+                return "<placeholder for showing N through M open jobs>"
+                
+
+SMSDialogContext = namedtuple('SMSDialogContext', 'courier source_number message')
 
 class DialogEngine(object):
     def __init__(self):
         self.msg_dispatch_tbl = {}
+        self.generator_dispatch_tbl = {}
 
 
     def register_cmd_spec(self, sms_command_spec, handler_func):
         self.msg_dispatch_tbl[str(sms_command_spec)] = handler_func
 
 
-    def reply_sms_command(self, sys_cmd, service_registry):
+    def register_generator_cmd(self, generator_cmd_spec, handler_func):
+        self.generator_dispatch_tbl[str(generator_cmd_spec)] = handler_func
+
+
+    def _reply_hashtag_command(self, hashtag_cmd, dialog_context, service_registry, **kwargs):
+        return 'placeholder for hashtag response'
+
+
+    def _reply_generator_command(self, gen_cmd, dialog_context, service_registry, **kwargs):
+        list_generator = self.generator_dispatch_tbl.get(str(gen_cmd.cmdspec))
+        if not list_generator:
+            return 'No handler registered in SMS DialogEngine for generator command %s.' % gen_cmd.cmdspec.command
+        return list_generator(gen_cmd, self, dialog_context, service_registry)
+
+
+    def _reply_sys_command(self, sys_cmd, dialog_context, service_registry, **kwargs):
         handler = self.msg_dispatch_tbl.get(str(sys_cmd.cmdspec))
         if not handler:
-            return 'No handler registered in SMS DialogEngine for command %s.' % sys_cmd.cmdspec.command
+            return 'No handler registered in SMS DialogEngine for system command %s.' % sys_cmd.cmdspec.command
+        return handler(sys_cmd, dialog_context, service_registry)
 
-        return handler(sys_cmd, service_registry)
 
+    def reply_command(self, command_input, dialog_context, service_registry, **kwargs):
+        # command types: generator, syscommand, hashtag
+        if command_input.cmd_type == 'hashtag':
+            return self._reply_hashtag_command(command_input.cmd_object, dialog_context, service_registry)
+        elif command_input.cmd_type == 'syscommand':
+            return self._reply_sys_command(command_input.cmd_object, dialog_context, service_registry)
+        elif command_input.cmd_type == 'generator':
+            return self._reply_generator_command(command_input.cmd_object, dialog_context, service_registry)
+        else:
+            raise Exception('Unrecognized command input type %s.' % command_input.cmd_type)
 
+    
 def sms_responder_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
     sms_svc = service_objects.lookup('sms')
 
     engine = DialogEngine()
     
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['bid'], handle_bid_for_job)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['acc'], handle_accept_job)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['dt'], handle_job_details)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['er'], handle_en_route)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['can'], handle_cancel_job)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['fin'], handle_job_finished)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['911'], handle_emergency)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['hlp'], handle_help)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['on'], handle_on_duty)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['off'], handle_off_duty)
-    engine.register_cmd_spec(SMS_COMMAND_SPECS['my'], handle_list_my_jobs)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['bid'], handle_bid_for_job)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['acc'], handle_accept_job)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['dt'], handle_job_details)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['er'], handle_en_route)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['can'], handle_cancel_job)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['fin'], handle_job_finished)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['911'], handle_emergency)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['hlp'], handle_help)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['on'], handle_on_duty)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['off'], handle_off_duty)
+
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
 
     print('###------ SMS payload:')
     source_number = input_data['From']
@@ -560,25 +723,29 @@ def sms_responder_func(input_data, service_objects, **kwargs):
 
     mobile_number = normalize_mobile_number(source_number)
 
+    courier = None
     with db_svc.txn_scope() as session:
         courier = lookup_courier_by_mobile_number(mobile_number, session, db_svc)
         if not courier:
             print('Courier with mobile number %s not found.' % mobile_number)
             sms_svc.send_sms(mobile_number, REPLY_NOT_IN_NETWORK)
-        else:
-            try:
-                sys_command = parse_sms_message_body(message_body)
-                print('#----- Resolved system command: %s' % str(sys_command))
+            return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
+        
+    context = SMSDialogContext(courier=courier, source_number=mobile_number, message=message_body)
 
-                response = engine.reply_sms_command(sys_command, service_objects)
-                sms_svc.send_sms(mobile_number, response)
+    try:
+        command_input = parse_sms_message_body(message_body)
+        print('#----- Resolved command: %s' % str(command_input))
 
-                return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=sys_command))
+        response = engine.reply_command(command_input, service_objects, context)
+        sms_svc.send_sms(mobile_number, response)
 
-            except UnrecognizedSMSCommand as err:
-                print('#----- Unrecognized system command: in message body: %s' % message_body)
-                sms_svc.send_sms(mobile_number, compile_help_string())
-                return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
+        return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=command_input))
+
+    except UnrecognizedSMSCommand as err:
+        print('#----- Unrecognized system command: in message body: %s' % message_body)
+        sms_svc.send_sms(mobile_number, compile_help_string())
+        return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
     
 
 def poll_job_status_func(input_data, service_objects, **kwargs):
@@ -626,21 +793,30 @@ def update_courier_status_func(input_data, service_objects, **kwargs):
     return core.TransformStatus(ok_status('update courier status', updated=did_update, id=courier_id, duty_status=new_status))
 
 
-def job_bids_func(input_data, service_objects, **kwargs):
-
+def active_job_bidders_func(input_data, service_objects, **kwargs):
+    '''Return a list of couriers who have bid on the job passed in the input data,
+    provided the job is active (calling this function against a job whose bidding window 
+    has closed, should return an empty list)
+    '''
+    
     job_tag = input_data['job_tag']
+    courier_list = []
+    db_svc = service_objects.lookup('postgres')
+    JobBid = db_svc.Base.classes.job_bids
+    Courier = db_svc.Base.classes.couriers
 
-    clist = [
-        {
-            'first_name': 'Dexter',
-            'last_name': 'Taylor',
-            'mobile_number': '9174176968'
-        },
-        {
-            'first_name': 'Saleh',
-            'last_name': 'Alghusson',
-            'mobile_number': '9796763969'
-        }
-    ]
-    return core.TransformStatus(ok_status('get active job bids', couriers=clist))
+    with db_svc.txn_scope() as session:
+        for c, jb in session.query(Courier, JobBid).filter(and_(Courier.id == JobBid.courier_id,
+                                                                JobBid.job_tag == job_tag,
+                                                                JobBid.accepted_ts == None,
+                                                                JobBid.expired_ts == None)).all(): 
+
+            courier_list.append({
+                'first_name': c.first_name,
+                'last_name': c.last_name,
+                'mobile_number': c.mobile_number
+            })
+
+    return core.TransformStatus(ok_status('get active job bidders', couriers=courier_list))
+
 

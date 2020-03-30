@@ -295,7 +295,7 @@ class BXLogicAPIService(object):
         self.poll_job = APIEndpoint(host=self.hostname, port=self.port, path='job', method='GET')
         self.update_job_status = APIEndpoint(host=self.hostname, port=self.port, path='jobstatus', method='POST')
         self.update_job_log = APIEndpoint(host=self.hostname, port=self.port, path='joblog', method='POST')
-        self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bids', method='GET')
+        self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bidders', method='GET')
 
 
     def endpoint_url(self, api_endpoint, **kwargs):
