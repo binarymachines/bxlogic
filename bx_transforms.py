@@ -482,15 +482,16 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
         
         # job exists and is available, so bid for it
         kwargs['job_tag'] = cmd_object.job_tag
-        bid = ObjectFactory.create_job_bid(db_svc, **kwargs)
+        bid = ObjectFactory.create_job_bid(db_svc,
+                                           courier_id=dlg_context.courier.id,
+                                           job_tag=cmd_object.job_tag)
         session.add(bid)
 
         return '\n'.join([
-            "Thank you! You've made a bid to accept a job.",
+            "Thank you! You've made a bid to accept job:",
+            cmd_object.job_tag,
             "If you get the assignment, we'll text you when the bidding window closes."
         ])
-
-        #job_tags = lookup_job_tags_by_status([0, 1], session, db_svc)
 
     
 def handle_accept_job(cmd_object, dlg_context, service_registry, **kwargs):
@@ -634,15 +635,11 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
                     command_tokens.extend(cmd_object.modifiers)
 
                     # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
-                    command_string = '+'.join(command_tokens) 
-
-                    print('#@@@@ generated new command string: %s' % command_string)
-
+                    command_string = '+'.join(command_tokens)
                     chained_command = parse_sms_message_body(command_string)
 
-                    print('command: ' + str(chained_command))
-                    #return 'debugging command chaining.'
-                    return dlg_engine.reply_command(chained_command, service_registry)
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
 
             elif extension_is_range(ext):
                 # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
@@ -731,13 +728,15 @@ def sms_responder_func(input_data, service_objects, **kwargs):
             sms_svc.send_sms(mobile_number, REPLY_NOT_IN_NETWORK)
             return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
         
-    context = SMSDialogContext(courier=courier, source_number=mobile_number, message=message_body)
+        session.expunge(courier)
+        
+    dlg_context = SMSDialogContext(courier=courier, source_number=mobile_number, message=message_body)
 
     try:
         command_input = parse_sms_message_body(message_body)
         print('#----- Resolved command: %s' % str(command_input))
 
-        response = engine.reply_command(command_input, service_objects, context)
+        response = engine.reply_command(command_input, dlg_context, service_objects)
         sms_svc.send_sms(mobile_number, response)
 
         return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=command_input))
@@ -798,7 +797,7 @@ def active_job_bidders_func(input_data, service_objects, **kwargs):
     provided the job is active (calling this function against a job whose bidding window 
     has closed, should return an empty list)
     '''
-    
+
     job_tag = input_data['job_tag']
     courier_list = []
     db_svc = service_objects.lookup('postgres')
