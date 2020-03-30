@@ -128,17 +128,17 @@ def handle_job_posted(job_post_data, service_registry):
             break
 
 
-    assignee = arbitrate(job_post_data, bid_data, service_registry)
+    target_courier = arbitrate(job_post_data, bid_data, service_registry)
 
-    job_assigned_reply_lines = [
+    reply_lines = [
         '*********',
-        'Hello %s, you have been assigned the delivery job with tag %s.' % (assignee['first_name'], job_tag),
-        'Text the job tag, space, and "det" to see job details.',
-        'Godspeed!',
+        'Hello %s %s, you have been awarded the delivery job with tag %s.' % (target_courier['first_name'], target_courier['last_name'], job_tag),
+        'Text the job tag, space, and "det" to see job details;',
+        'Text the job tag, space, and "acc" if you accept this job.',
         '*********'
     ]
-    msg = '\n'.join(job_assigned_reply_lines)
-    sms_service.send_sms(assignee['mobile_number'], msg)
+    msg = '\n'.join(reply_lines)
+    sms_service.send_sms(target_courier['mobile_number'], msg)
 
             
                 
