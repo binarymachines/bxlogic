@@ -284,6 +284,11 @@ transforms:
     input_shape:        job_bidders_shape
     output_mimetype:    application/json
 
+  bidding_policy:
+    route:              /policy
+    method:             GET
+    input_shape:        default
+    output_mimetype:    application/json
 
 decoders:
   application/json; charset=utf-8: decode_json

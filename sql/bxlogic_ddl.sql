@@ -44,6 +44,16 @@ CREATE TABLE "job_assignments" (
   PRIMARY KEY ("courier_id", "job_id")
 );
 
+CREATE TABLE "job_bids" (
+  "id" uuid NOT NULL DEFAULT public.uuid_generate_v4(),
+  "job_tag" varchar(128) NOT NULL,
+  "courier_id" uuid NOT NULL,
+  "write_ts" timestamp NOT NULL,
+  "accepted_ts" timestamp,
+  "expired_ts" timestamp,
+  PRIMARY KEY ("id")
+);
+
 CREATE TABLE "job_data" (
   "id" uuid NOT NULL DEFAULT public.uuid_generate_v4(),
   "client_id" uuid NOT NULL,
@@ -61,6 +71,14 @@ CREATE TABLE "job_data" (
   "delivery_window_open" timestamp(255),
   "delivery_window_close" timestamp(255),
   "deleted_ts" timestamp(255),
+  PRIMARY KEY ("id")
+);
+
+CREATE TABLE "job_logs" (
+  "id" uuid NOT NULL DEFAULT public.uuid_generate_v4(),
+  "job_tag" varchar(255) NOT NULL,
+  "data" text NOT NULL,
+  "log_time" timestamp,
   PRIMARY KEY ("id")
 );
 
@@ -109,5 +127,6 @@ ALTER TABLE "courier_transport_methods" ADD CONSTRAINT "fk_courier_transport_met
 ALTER TABLE "courier_transport_methods" ADD CONSTRAINT "fk_courier_transport_methods_couriers_1" FOREIGN KEY ("courier_id") REFERENCES "couriers" ("id");
 ALTER TABLE "job_assignments" ADD CONSTRAINT "fk_job_assignments_couriers_1" FOREIGN KEY ("courier_id") REFERENCES "couriers" ("id");
 ALTER TABLE "job_assignments" ADD CONSTRAINT "fk_job_assignments_job_data_1" FOREIGN KEY ("job_id") REFERENCES "job_data" ("id");
+ALTER TABLE "job_bids" ADD CONSTRAINT "fk_job_bids_couriers_1" FOREIGN KEY ("courier_id") REFERENCES "couriers" ("id");
 ALTER TABLE "job_data" ADD CONSTRAINT "fk_job_data_clients_1" FOREIGN KEY ("client_id") REFERENCES "clients" ("id");
 

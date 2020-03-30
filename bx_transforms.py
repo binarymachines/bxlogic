@@ -58,8 +58,9 @@ SMS_SYSTEM_COMMAND_SPECS = {
 }
 
 SMS_GENERATOR_COMMAND_SPECS = {
-    'my': SMSGeneratorSpec(command='my', definition='List my pending jobs', specifier='.'), # special command (dot notation),
-    'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.')
+    'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.'), 
+    'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.'),
+    'awd': SMSGeneratorSpec(command='asg', definition='List my awarded (but not yet accepted) jobs', specifier='.')
 }
 
 SMS_RESPONSES = {
@@ -449,6 +450,19 @@ def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
         return None
 
 
+def courier_has_bid(courier_id, job_tag, session, db_svc):
+    JobBid =db_svc.Base.classes.job_bids
+    Courier = db_svc.Base.classes.couriers
+    try:
+        bid = session.query(JobBid).filter(and_(JobBid.courier_id == courier_id,
+                                                 JobBid.job_tag == job_tag,
+                                                 JobBid.expired_ts == None,
+                                                 JobBid.accepted_ts == None)).one()
+        return True                                                 
+    except NoResultFound:
+        return False
+
+
 def compile_help_string():
     lines = []
     for key, cmd_spec in SMS_SYSTEM_COMMAND_SPECS.items():
@@ -458,16 +472,17 @@ def compile_help_string():
 
 
 def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
+    # TODO: update duty status; short-circuit if already on
     return '''
     Welcome to the on-call roster. Reply to job tags with the tag and "gtg" to accept a job. Text "hlp" or "?" at any time to see the command codes.'''
 
 
 def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
+    # TODO update duty status; short-circuit if already off
     return 'You are now leaving the on-call roster. Thank you for your service. Have a good one!'
 
 
 def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
-
     if not cmd_object.job_tag:
         return 'Bid for a job by texting the job tag, space, and "bid".' 
 
@@ -480,6 +495,15 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
         if not job_is_available(cmd_object.job_tag, session, db_svc):
             return 'The job with tag:\n%s\n is not in the pool of available jobs.\nText "opn" for a list of open jobs.'
         
+        # only one bid per user (TODO: pluggable bidding policy)
+        if courier_has_bid(dlg_context.courier.id, cmd_object.job_tag, session, db_svc):
+            return '\n'.join([
+                'You have already bid on the job:',
+                cmd_object.job_tag,
+                "Once the bid window closes, we'll text you if you get the assignment.",
+                "Good luck!"
+            ])
+
         # job exists and is available, so bid for it
         kwargs['job_tag'] = cmd_object.job_tag
         bid = ObjectFactory.create_job_bid(db_svc,
@@ -495,8 +519,8 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
 
     
 def handle_accept_job(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO: update status table
-    return '<placeholder for accepting a job>'
+    # TODO: verify (non-stale) assignment, update status table
+    return 'To accept a job assignment, text the job tag, a space, and "acc".'
 
 
 def handle_help(cmd_object, dlg_context, service_registry, **kwargs):
@@ -505,7 +529,7 @@ def handle_help(cmd_object, dlg_context, service_registry, **kwargs):
 
 def handle_job_details(cmd_object, dlg_context, service_registry, **kwargs):
     if cmd_object.job_tag == None:
-        return 'To receive details on a job, text the job tag, a space, and "dt"'
+        return 'To receive details on a job, text the job tag, a space, and "dt".'
 
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
@@ -560,20 +584,6 @@ def handle_emergency(cmd_object, dlg_context, service_registry, **kwargs):
     return "Reporting an emergency for courier X. If this is a life-threatening emergency, please call 911"
     
 
-def generate_list_my_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
-    print('Specifier character is "%s"' % cmd_object.cmdspec.specifier)
-
-    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
-
-    if len(tokens) == 1:
-        # show all my assigned jobs
-        return "<placeholder for listing ALL jobs assigned to this courier>"
-
-    else:
-        # show a subset of my assigned jobs
-        return "<placeholder for showing the Nth job assigned to this courier>"
-
-
 def extension_is_integer(ext_string):
     if INTEGER_RX.match(ext_string):
         return True
@@ -586,8 +596,34 @@ def extension_is_range(ext_string):
     return False
 
 
-def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    '''List jobs which have been awarded to this courier in the bidding process
+    (but not yet accepted).
+    '''
 
+    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+    if len(tokens) == 1:
+        # show all my assigned jobs
+        return "<placeholder for listing ALL jobs awarded to (not yet accepted by) this courier>"
+
+    else:
+        # show a subset of my assigned jobs
+        return "<placeholder for showing the Nth job awarded to (not yet accepted by) this courier>"
+
+
+
+def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    print('Specifier character is "%s"' % cmd_object.cmdspec.specifier)
+
+    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+    if len(tokens) == 1:
+        return "<placeholder for listing ALL jobs accepted by this courier>"
+
+    else:
+        return "<placeholder for showing the Nth job accepted by this courier>"
+
+
+def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
     print('#--- Generating open job listing...')
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
@@ -710,7 +746,8 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['on'], handle_on_duty)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['off'], handle_off_duty)
 
-    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_accepted_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['awd'], generate_list_my_awarded_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
 
     print('###------ SMS payload:')

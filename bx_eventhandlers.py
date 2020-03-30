@@ -11,7 +11,6 @@ from contextlib import ContextDecorator
 from snap import common
 from mercury import journaling as jrnl
 from bx_services import S3Key
-#from eos_watch_triggers import *
 
 
 class UnrecognizedJobType(Exception):
@@ -94,8 +93,23 @@ def handle_job_posted(job_post_data, service_registry):
 
     bidding_threshold_type = job_post_data['bid_window']['limit_type']
     bidding_threshold = int(job_post_data['bid_window']['limit'])
+    bid_data = None
 
-    if bidding_threshold_type == 'time_seconds':
+    if bidding_threshold_type == 'num_bids':
+        poll_interval = 2
+
+        while num_bids < bidding_threshold:
+            print('#---- Polling every %d seconds until we receive at least %d bids...' % (poll_interval, bidding_threshold))
+            time.sleep(poll_interval)
+
+            response = api_service.get_active_job_bids(job_tag)
+            bid_data = response.json()['data']
+            print(common.jsonpretty(bid_data))
+            num_bids = len(bid_data['couriers'])
+
+            # TODO: we may need an overall timeout, so that we don't stay in here forever
+
+    elif bidding_threshold_type == 'time_seconds':
         while True:
             # now retrieve the couriers who have bid on this job
             print('#---- Waiting %d seconds for bidding window to close...' % bidding_threshold)
@@ -107,23 +121,26 @@ def handle_job_posted(job_post_data, service_registry):
 
             num_bids = len(bid_data['couriers'])
             if not num_bids:
+                # TODO: pluggable policy as to whether we should close the window if no one bids
                 print('#---- The %s second bidding window closed with no job bids. Retrying.' % bidding_threshold)
                 continue
             
-            assignee = arbitrate(job_post_data, bid_data, service_registry)
-
-            job_assigned_reply_lines = [
-                '*********',
-                'Hello %s, you have been assigned the delivery job with tag %s.' % (assignee['first_name'], job_tag),
-                'Text the job tag, space, and "det" to see job details.',
-                'Godspeed!',
-                '*********'
-            ]
-
-            msg = '\n'.join(job_assigned_reply_lines)
-            sms_service.send_sms(assignee['mobile_number'], msg)
-
             break
+
+
+    assignee = arbitrate(job_post_data, bid_data, service_registry)
+
+    job_assigned_reply_lines = [
+        '*********',
+        'Hello %s, you have been assigned the delivery job with tag %s.' % (assignee['first_name'], job_tag),
+        'Text the job tag, space, and "det" to see job details.',
+        'Godspeed!',
+        '*********'
+    ]
+    msg = '\n'.join(job_assigned_reply_lines)
+    sms_service.send_sms(assignee['mobile_number'], msg)
+
+            
                 
 
 def handle_job_assigned(jsondata, service_registry):
@@ -190,25 +207,14 @@ def msg_handler(message, receipt_handle, service_registry):
             return
 
         """
-        jerry_svc = service_registry.lookup('job_mgr_api')
-        job_tag = jsondata['job_tag']
+        # to time a block of code:
+
         time_log = jrnl.TimeLog()
         timer_label = 'job_handler_exec_time: %s' % job_tag
 
-        try:
-            print('>>> starting data handling job with tag: [ %s ]' % job_tag, file=sys.stderr)
+        with jrnl.stopwatch(timer_label, time_log):
+            <code block>
 
-            jobtype = determine_job_type(jsondata)
-            job_handler_func = get_handler_for_job_type(jobtype)
-            
-            with jrnl.stopwatch(timer_label, time_log):
-                job_handler_func(jsondata, service_registry)
-            print(time_log.readout)
+        print(time_log.readout)
 
-        except Exception as err:
-            jerry_svc.notify_job_failed(job_tag)
-            print('!!! TOP LEVEL %s exception uncaught in event handler -- reporting FAILURE: %s' % (err.__class__.__name__, str(err)))
-            print('!!! Notified job mgr of FAILURE for job tag %s' % job_tag, file=sys.stderr)
-            print('!!! Exception of type %s thrown:' % err.__class__.__name__, file=sys.stderr)
-            print(err, file=sys.stderr)
         """

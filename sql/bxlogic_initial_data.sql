@@ -19,7 +19,6 @@ VALUES
 (2, 'deliver')
 
 
-
 INSERT INTO lookup_duty_status
 (id, value)
 VALUES
