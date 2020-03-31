@@ -4,6 +4,7 @@ import re
 import uuid
 import json
 import datetime
+from urllib.parse import quote, unquote_plus
 from collections import namedtuple
 from snap import snap, common
 from snap import core
@@ -74,7 +75,7 @@ REPLY_NOT_IN_NETWORK = "You have sent a control message to our logistics network
 REPLY_GET_INVOLVED_TPL = "If you'd like to become a courier, please send email to {contact_email} and someone will contact you."
 REPLY_CMD_FORMAT = "You have texted a command that requires a job tag. Text the job tag, a space, and then the command."
 REPLY_CMD_HELP_AVAILABLE = 'Text "help" to the target number to get a list of command strings and what they do.'
-REPLY_INVALID_TAG = 'The job tag you have specified appears to be invalid.'
+REPLY_INVALID_TAG_TPL = 'The job tag you have specified (%s) appears to be invalid.'
 
 def generate_assign_job_reply(**kwargs):
     return REPLY_ASSIGN_JOB_TPL.format(**kwargs)
@@ -336,17 +337,13 @@ def new_job_func(input_data, service_objects, **kwargs):
                                                         status=0,
                                                         write_ts=datetime.datetime.now())
         session.add(status_record)
-        couriers = lookup_couriers_by_status(1, session, db_svc)
 
     raw_record['id'] = job_id
-
     pipeline_svc = service_objects.lookup('job_pipeline')
     s3_svc = service_objects.lookup('s3')
-    
     pipeline_svc.post_job_notice(raw_record['job_tag'],
                                  s3_svc, 
-                                 job_data=raw_record,
-                                 available_couriers=couriers)
+                                 job_data=raw_record)
 
     return core.TransformStatus(ok_status('new Job created', data=raw_record))
 
@@ -401,12 +398,17 @@ def parse_sms_message_body(raw_body):
     modifiers = []
     
     # make sure there's no leading whitespace, then see what we've got
-    body = raw_body.lstrip('+')
+    body = unquote_plus(raw_body).lstrip().rstrip()
+
+    print('\n\n@__________ inside parse logic. Raw message body is:')
+    print(body)
+    print('@__________\n\n')
+
 
     if body.startswith('bxlog-'):
         # remove the URL encoded whitespace chars;
         # remove any trailing/leading space chars as well
-        tokens = [token.lstrip('+').rstrip('+') for token in body.split('+') if token]
+        tokens = [token.lstrip().rstrip() for token in body.split(' ') if token]
 
         print('message tokens: %s' % common.jsonpretty(tokens))
 
@@ -422,7 +424,7 @@ def parse_sms_message_body(raw_body):
         return CommandInput(cmd_type='hashtag', cmd_object=Hashtag('#%s' % body[1:].lower()))
 
     else:
-        tokens = [token.lstrip('+').rstrip('+') for token in body.split('+') if token]
+        tokens = [token.lstrip().rstrip() for token in body.split(' ') if token]
         command_string = tokens[0].lower()
         modifiers = tokens[1:]
 
@@ -450,6 +452,22 @@ def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
         return None
 
 
+def courier_is_on_duty(courier_id, session, db_svc):
+    Courier = db_svc.Base.classes.couriers
+    try:
+        courier = session.query(Courier).filter(Courier.id == courier_id).one()
+        if courier.duty_status == 1:
+            return True
+        elif courier.duty_status == 0:
+            return False
+        else:
+            raise Exception('Unrecognized courier duty_status value %s.' % courier.duty_status)
+    except NoResultFound:
+        # TODO: maybe raise some more hell if we got an invalid courier ID,
+        # but this is fine for now
+        return False
+
+
 def courier_has_bid(courier_id, job_tag, session, db_svc):
     JobBid =db_svc.Base.classes.job_bids
     Courier = db_svc.Base.classes.couriers
@@ -473,13 +491,19 @@ def compile_help_string():
 
 def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: update duty status; short-circuit if already on
-    return '''
-    Welcome to the on-call roster. Reply to job tags with the tag and "gtg" to accept a job. Text "hlp" or "?" at any time to see the command codes.'''
+    return '\n'.join([
+        'Hello %s, welcome to the on-call roster.' % dlg_context.courier.first_name, 
+        'Reply to advertised job tags with the tag and "acc" to accept a job.',
+        'Text "hlp" or "?" at any time to see the command codes.'
+    ])
 
 
 def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO update duty status; short-circuit if already off
-    return 'You are now leaving the on-call roster. Thank you for your service. Have a good one!'
+    return '\n'.join([
+        'Hello %s, you are now leaving the on-call roster.' % dlg_context.courier.first_name,
+        'Thank you for your service. Have a good one!'
+    ])
 
 
 def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
@@ -487,14 +511,25 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
         return 'Bid for a job by texting the job tag, space, and "bid".' 
 
     if not is_valid_job_tag(cmd_object.job_tag):
-        return REPLY_INVALID_TAG
+        return REPLY_INVALID_TAG_TPL % cmd_object.job_tag
 
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
         # make sure the job is open
         if not job_is_available(cmd_object.job_tag, session, db_svc):
-            return 'The job with tag:\n%s\n is not in the pool of available jobs.\nText "opn" for a list of open jobs.'
+            return '\n'.join(['The job with tag:',
+                              cmd_object.job_tag,
+                              'is not in the pool of available jobs.',
+                              'Text "opn" for a list of open jobs.'
+                            ])
         
+        if not courier_is_on_duty(dlg_context.courier.id, session, db_svc):
+            return '\n'.join([
+                'Hello %s, you are attempting to bid on a job,' % dlg_context.courier.first_name,
+                'but you are not currently on the duty roster.',
+                'Text "on" to go on duty.'
+            ])
+
         # only one bid per user (TODO: pluggable bidding policy)
         if courier_has_bid(dlg_context.courier.id, cmd_object.job_tag, session, db_svc):
             return '\n'.join([
@@ -520,7 +555,10 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
     
 def handle_accept_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: verify (non-stale) assignment, update status table
-    return 'To accept a job assignment, text the job tag, a space, and "acc".'
+    if not cmd_object.job_tag:
+        return 'To accept a job assignment, text the job tag, a space, and "acc".'
+
+    return "<Placeholder for accepting a job that has been awarded to the courier>"
 
 
 def handle_help(cmd_object, dlg_context, service_registry, **kwargs):
@@ -560,7 +598,7 @@ def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
         
     lines = [
         "You have reported that you're en route for job:",
-        cmd_object.get('job_tag')
+        cmd_object.job_tag
     ]
 
     return '\n'.join(lines)
@@ -569,20 +607,41 @@ def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
 def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
     # TODO: update status table
-    return "Canceling job."
+    if not cmd_object.job_tag:
+        return 'To cancel a job, text the job tag, a space, and "can".'
+    
     # TODO: add cancel logic
+    return "Recording job cancellation for job tag: %s" % cmd_object.job_tag
+    
 
 
 def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
     # TODO: update status table
+    if not cmd_object.job_tag:
+        return 'To notify the system that you have completed a job, text the job tag, space, and "fin".'
+    
     return "Recording job completion for job tag %s. Thank you!" % cmd_object.job_tag
 
 
 def handle_emergency(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: add broadcast logic
-    return "Reporting an emergency for courier X. If this is a life-threatening emergency, please call 911"
+    courier_name = '%s %s' % (dlg_context.courier.first_name, dlg_context.courier.last_name)
+    return '\n'.join([
+        "Reporting an emergency for courier %s" % courier_name,
+        "with mobile phone number %s." % dlg_context.source_number, 
+        "To report a crime or a life-threatening emergency, ",
+        "please IMMEDIATELY call 911." 
+    ])
     
+
+def handle_bidding_status_for_job(cmd_object, dlg_context, service_registry, **kwargs):
+    # TODO: return actual bidding status (is bidding open? closed? Has job been awarded? Accepted?)
+    if not cmd_object.job_tag:
+        return 'To see the bidding status of a job, text the job tag, space, and "bst".'
+
+    return "Placeholder for reporting bidding status of a job"
+
 
 def extension_is_integer(ext_string):
     if INTEGER_RX.match(ext_string):
@@ -736,6 +795,7 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine = DialogEngine()
     
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['bid'], handle_bid_for_job)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['bst'], handle_bidding_status_for_job)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['acc'], handle_accept_job)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['dt'], handle_job_details)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['er'], handle_en_route)
@@ -752,8 +812,11 @@ def sms_responder_func(input_data, service_objects, **kwargs):
 
     print('###------ SMS payload:')
     source_number = input_data['From']
-    message_body = input_data['Body']
-    print('###------ Received message "%s" from mobile number [%s].' % (message_body, source_number))
+    raw_message_body = input_data['Body']
+    
+    print('###')
+    print('###------ Received raw message "%s" from mobile number [%s].' % (raw_message_body, source_number))
+    print('###')
 
     mobile_number = normalize_mobile_number(source_number)
 
@@ -767,10 +830,10 @@ def sms_responder_func(input_data, service_objects, **kwargs):
         
         session.expunge(courier)
         
-    dlg_context = SMSDialogContext(courier=courier, source_number=mobile_number, message=message_body)
+    dlg_context = SMSDialogContext(courier=courier, source_number=mobile_number, message=unquote_plus(raw_message_body))
 
     try:
-        command_input = parse_sms_message_body(message_body)
+        command_input = parse_sms_message_body(raw_message_body)
         print('#----- Resolved command: %s' % str(command_input))
 
         response = engine.reply_command(command_input, dlg_context, service_objects)
@@ -779,7 +842,8 @@ def sms_responder_func(input_data, service_objects, **kwargs):
         return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=command_input))
 
     except UnrecognizedSMSCommand as err:
-        print('#----- Unrecognized system command: in message body: %s' % message_body)
+        print('Error data: %s' % err)
+        print('#----- Unrecognized system command: in message body: %s' % raw_message_body)
         sms_svc.send_sms(mobile_number, compile_help_string())
         return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
     

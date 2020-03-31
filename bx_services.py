@@ -296,6 +296,7 @@ class BXLogicAPIService(object):
         self.update_job_status = APIEndpoint(host=self.hostname, port=self.port, path='jobstatus', method='POST')
         self.update_job_log = APIEndpoint(host=self.hostname, port=self.port, path='joblog', method='POST')
         self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bidders', method='GET')
+        self.couriers = APIEndpoint(host=self.hostname, port=self.port, path='couriers', method='GET')
 
 
     def endpoint_url(self, api_endpoint, **kwargs):
@@ -303,7 +304,7 @@ class BXLogicAPIService(object):
             scheme = 'https'
         else:
             scheme = 'http'
-
+            
         url = '{scheme}://{host}:{port}'.format(scheme=scheme, host=api_endpoint.host, port=api_endpoint.port)
         return os.path.join(url, api_endpoint.path)
 
@@ -321,6 +322,14 @@ class BXLogicAPIService(object):
     def get_active_job_bids(self, job_tag, **kwargs):
         payload = {'job_tag': job_tag}
         response = self._call_endpoint(self.poll_job_bids,
+                                       payload, 
+                                       **kwargs)
+        return response
+
+
+    def get_available_couriers(self, **kwargs):
+        payload = { 'status': 1 }
+        response = self._call_endpoint(self.couriers,
                                        payload, 
                                        **kwargs)
         return response

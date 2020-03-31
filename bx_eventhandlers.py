@@ -63,7 +63,7 @@ def arbitrate(job_post_data, bid_data, service_registry):
     random.seed(time.time())
     index = random.randrange(0, len(couriers))
 
-    return couriers[index]
+    return [couriers[index]]
 
 
 def handle_job_posted(job_post_data, service_registry):
@@ -73,7 +73,6 @@ def handle_job_posted(job_post_data, service_registry):
         "job_data": {
             # <job_data DB table fields>
         },
-        "available_couriers": [],
         "bid_window": {
             "limit_type": "time_seconds" | "num_bids"
             "limit": <limit> 
@@ -88,7 +87,12 @@ def handle_job_posted(job_post_data, service_registry):
     sms_service = service_registry.lookup('sms')
     api_service = service_registry.lookup('job_mgr_api')
 
-    for courier_record in job_post_data['available_couriers']:
+    # get_available_couriers() should return:
+    # { "data": "couriers": [{ <data> }, ...]
+    response = api_service.get_available_couriers()
+    couriers = response.json()['data']['couriers']
+
+    for courier_record in couriers:
         sms_service.send_sms(courier_record['mobile_number'], job_tag)
 
     bidding_threshold_type = job_post_data['bid_window']['limit_type']
@@ -105,7 +109,9 @@ def handle_job_posted(job_post_data, service_registry):
             response = api_service.get_active_job_bids(job_tag)
             bid_data = response.json()['data']
             print(common.jsonpretty(bid_data))
-            num_bids = len(bid_data['couriers'])
+
+            couriers = bid_data['couriers']
+            num_bids = len(couriers)
 
             # TODO: we may need an overall timeout, so that we don't stay in here forever
 
@@ -128,19 +134,25 @@ def handle_job_posted(job_post_data, service_registry):
             break
 
 
-    target_courier = arbitrate(job_post_data, bid_data, service_registry)
+    # this returns an array, because there may be arbitration scenarios where a job
+    # is awarded to a team rather than an individual
+    target_couriers = arbitrate(job_post_data, bid_data, service_registry)
 
-    reply_lines = [
-        '*********',
-        'Hello %s %s, you have been awarded the delivery job with tag %s.' % (target_courier['first_name'], target_courier['last_name'], job_tag),
-        'Text the job tag, space, and "det" to see job details;',
-        'Text the job tag, space, and "acc" if you accept this job.',
-        '*********'
-    ]
-    msg = '\n'.join(reply_lines)
-    sms_service.send_sms(target_courier['mobile_number'], msg)
+    if len(target_couriers):
+        for target_courier in target_couriers:
+            reply_lines = [
+                '*********',
+                'Hello %s %s, you have been awarded the delivery job with tag %s.' % (target_courier['first_name'], target_courier['last_name'], job_tag),
+                'Text the job tag, space, and "det" to see job details;',
+                'Text the job tag, space, and "acc" if you accept this job.',
+                '*********'
+            ]
+            msg = '\n'.join(reply_lines)
+            sms_service.send_sms(target_courier['mobile_number'], msg)
 
-            
+    else:
+        # no one was assigned the job; either cancel or reset and reopen the bidding window
+
                 
 
 def handle_job_assigned(jsondata, service_registry):
