@@ -295,8 +295,9 @@ class BXLogicAPIService(object):
         self.poll_job = APIEndpoint(host=self.hostname, port=self.port, path='job', method='GET')
         self.update_job_status = APIEndpoint(host=self.hostname, port=self.port, path='jobstatus', method='POST')
         self.update_job_log = APIEndpoint(host=self.hostname, port=self.port, path='joblog', method='POST')
-        self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bidders', method='GET')
+        self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bids', method='GET')
         self.couriers = APIEndpoint(host=self.hostname, port=self.port, path='couriers', method='GET')
+        self.bidstat = APIEndpoint(host=self.hostname, port=self.port, path='bidstat', method='GET')
 
 
     def endpoint_url(self, api_endpoint, **kwargs):
@@ -317,6 +318,20 @@ class BXLogicAPIService(object):
         if endpoint.method == 'POST':
             print('calling endpoint %s using POST with payload %s...' % (url_path, payload))
             return requests.post(url_path, data=payload)
+
+
+    def award_job(job_tag, bid_window_id, couriers, **kwargs):
+        payload = {
+            'window_id': bid_window_id,
+            'job_tag': job_tag,
+            'couriers': couriers
+        }
+        response = self._call_endpoint(self.award, payload, **kwargs)
+        return response
+
+    def get_open_bid_windows(self, **kwargs):
+        payload= {}
+        return self._call_endpoint(self.bidstat, payload, **kwargs)
 
 
     def get_active_job_bids(self, job_tag, **kwargs):

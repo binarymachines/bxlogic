@@ -5,10 +5,11 @@ INSERT INTO lookup_job_status
 (id, value)
 VALUES 
 (0, 'broadcast'),
-(1, 'accepted_partial'),
-(2, 'accepted'),
-(3, 'in_progress'),
-(4, 'completed'),
+(1, 'awarded'),
+(2, 'accepted_partial'),
+(3, 'accepted'),
+(4, 'in_progress'),
+(5, 'completed'),
 (6, 'canceled');
 
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os, sys
+import dateutil.parser
 import traceback
 import json
 import time
@@ -55,7 +56,7 @@ def get_handler_for_job_type(job_type):
     return handler_func
 
 
-def arbitrate(job_post_data, bid_data, service_registry):
+def handle_pending_arbitration(jsondata, service_registry):
     # Decide which bidder gets assigned a job, using a simple random selector. This is only for the proof of concept;
     # we will upgrade to smarter (and user-pluggable) arbitration methods once we shake the system out.
 
@@ -66,6 +67,40 @@ def arbitrate(job_post_data, bid_data, service_registry):
     return [couriers[index]]
 
 
+def handle_system_scan(jsondata, service_registry):
+
+    current_time = datetime.datetime.now()
+    # scan ALL open bidding windows
+
+    api_service = service_registry.lookup('job_mgr_api')
+    response = api_service.get_open_bid_windows()
+    bid_windows = response.json()['data']['bidding_windows']
+
+    print('###----- Retrieved open bid windows from API endpoint:')
+    print(bid_windows)
+    
+    # for each open window, see who has bid;
+    for bwindow in bid_windows:
+        
+        if bwindow['policy']['limit_type'] == 'num_bids':
+            print('++ Policy limit is set to %d bids.' % int(bwindow['policy']['limit']))
+
+        elif bwindow['policy']['limit_type'] == 'time_seconds':
+            # see how long the window has been open;
+            window_opened_at = dateutil.parser.parse(bwindow['open_ts'])
+            window_open_duration = current_time - window_opened_at
+            print('++ Policy limit is set to %d seconds.' % int(bwindow['policy']['limit']))
+            print('++ Bidding window has been open for %d seconds.' % window_open_duration.seconds)
+            
+        else:
+            #raise hell; we don't support that
+            raise Exception('Unrecognized bidding window policy limit_type: %s' % bwindow['policy']['limit_type'])
+
+        # use the policy data embedded in the bidding window to decide whether
+        # to trigger (manual | automatic) arbitration 
+
+
+
 def handle_job_posted(job_post_data, service_registry):
     '''when a job is posted, broadcast the notice via SMS to all available couriers,
     who may then "bid" to accept the job. The current JSON format for a job posting is:
@@ -74,6 +109,7 @@ def handle_job_posted(job_post_data, service_registry):
             # <job_data DB table fields>
         },
         "bid_window": {
+            "id": <window_id>,
             "limit_type": "time_seconds" | "num_bids"
             "limit": <limit> 
         }
@@ -95,84 +131,14 @@ def handle_job_posted(job_post_data, service_registry):
     for courier_record in couriers:
         sms_service.send_sms(courier_record['mobile_number'], job_tag)
 
-    bidding_threshold_type = job_post_data['bid_window']['limit_type']
-    bidding_threshold = int(job_post_data['bid_window']['limit'])
-    bid_data = None
-
-    if bidding_threshold_type == 'num_bids':
-        poll_interval = 2
-
-        while num_bids < bidding_threshold:
-            print('#---- Polling every %d seconds until we receive at least %d bids...' % (poll_interval, bidding_threshold))
-            time.sleep(poll_interval)
-
-            response = api_service.get_active_job_bids(job_tag)
-            bid_data = response.json()['data']
-            print(common.jsonpretty(bid_data))
-
-            couriers = bid_data['couriers']
-            num_bids = len(couriers)
-
-            # TODO: we may need an overall timeout, so that we don't stay in here forever
-
-    elif bidding_threshold_type == 'time_seconds':
-        while True:
-            # now retrieve the couriers who have bid on this job
-            print('#---- Waiting %d seconds for bidding window to close...' % bidding_threshold)
-            time.sleep(bidding_threshold)
-
-            response = api_service.get_active_job_bids(job_tag)
-            bid_data = response.json()['data']
-            print(common.jsonpretty(bid_data))
-
-            num_bids = len(bid_data['couriers'])
-            if not num_bids:
-                # TODO: pluggable policy as to whether we should close the window if no one bids
-                print('#---- The %s second bidding window closed with no job bids. Retrying.' % bidding_threshold)
-                continue
-            
-            break
-
-
-    # this returns an array, because there may be arbitration scenarios where a job
-    # is awarded to a team rather than an individual
-    target_couriers = arbitrate(job_post_data, bid_data, service_registry)
-
-    if len(target_couriers):
-        for target_courier in target_couriers:
-            reply_lines = [
-                '*********',
-                'Hello %s %s, you have been awarded the delivery job with tag %s.' % (target_courier['first_name'], target_courier['last_name'], job_tag),
-                'Text the job tag, space, and "det" to see job details;',
-                'Text the job tag, space, and "acc" if you accept this job.',
-                '*********'
-            ]
-            msg = '\n'.join(reply_lines)
-            sms_service.send_sms(target_courier['mobile_number'], msg)
-
-    else:
-        # no one was assigned the job; either cancel or reset and reopen the bidding window
-
-                
-
-def handle_job_assigned(jsondata, service_registry):
-    '''after some number of couriers have bid to accept a job (or after some 
-    time window has elapsed),the job is assigned to one of them based on 
-    user-defined arbitration logic. The job assignment is a systemwide event, 
-    so we handle it here by 
-    
-    (a) notifying, via SMS, the courier to whom the job was assigned
-    (b) notifying, via SMS, the couriers *not* assigned
-    '''
-
-    # TODO: notification logic
-    pass
+    ## done for now
 
 
 S3_EVENT_DISPATCH_TABLE = {
     'posted': handle_job_posted,
-    'assigned': handle_job_assigned
+    'scan': handle_system_scan
 }
+#'assigned': handle_job_assigned,
 
 def msg_handler(message, receipt_handle, service_registry):
 
@@ -180,6 +146,7 @@ def msg_handler(message, receipt_handle, service_registry):
     s3_svc = service_registry.lookup('s3')
     print('### Inside SQS message handler function.')
     print("### message follows:")
+    print(common.jsonpretty(message))
 
     # unpack SQS message to get notification about S3 file upload
     message_body_raw = message['Body']

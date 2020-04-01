@@ -81,8 +81,22 @@ update_job_log_shape = core.InputShape("update_job_log_shape")
 update_job_log_shape.add_field('job_tag', 'str', True)
 update_job_log_shape.add_field('message', 'str', True)
 default = core.InputShape("default")
-job_bidders_shape = core.InputShape("job_bidders_shape")
-job_bidders_shape.add_field('job_tag', 'str', True)
+open_bidding_shape = core.InputShape("open_bidding_shape")
+open_bidding_shape.add_field('job_tag', 'str', True)
+close_bidding_shape = core.InputShape("close_bidding_shape")
+close_bidding_shape.add_field('job_tag', 'str', True)
+job_bids_shape = core.InputShape("job_bids_shape")
+job_bids_shape.add_field('job_tag', 'str', True)
+default = core.InputShape("default")
+award_job_shape = core.InputShape("award_job_shape")
+award_job_shape.add_field('window_id', 'str', True)
+award_job_shape.add_field('job_tag', 'str', True)
+award_job_shape.add_field('couriers', 'list', True)
+rebroadcast_shape = core.InputShape("rebroadcast_shape")
+rebroadcast_shape.add_field('job_tag', 'str', True)
+rollover_shape = core.InputShape("rollover_shape")
+rollover_shape.add_field('job_tag', 'str', True)
+default = core.InputShape("default")
 
 #-- transforms ----
 
@@ -95,7 +109,14 @@ xformer.register_transform('new_job', new_job_shape, bx_transforms.new_job_func,
 xformer.register_transform('poll_job_status', poll_job_status_shape, bx_transforms.poll_job_status_func, 'application/json')
 xformer.register_transform('update_job_log', update_job_log_shape, bx_transforms.update_job_log_func, 'application/json')
 xformer.register_transform('sms_responder', default, bx_transforms.sms_responder_func, 'text/json')
-xformer.register_transform('active_job_bidders', job_bidders_shape, bx_transforms.active_job_bidders_func, 'application/json')
+xformer.register_transform('open_bidding', open_bidding_shape, bx_transforms.open_bidding_func, 'application/json')
+xformer.register_transform('close_bidding', close_bidding_shape, bx_transforms.close_bidding_func, 'application/json')
+xformer.register_transform('active_job_bids', job_bids_shape, bx_transforms.active_job_bids_func, 'application/json')
+xformer.register_transform('bidding_policy', default, bx_transforms.bidding_policy_func, 'application/json')
+xformer.register_transform('award_job', award_job_shape, bx_transforms.award_job_func, 'application/json')
+xformer.register_transform('rebroadcast', rebroadcast_shape, bx_transforms.rebroadcast_func, 'application/json')
+xformer.register_transform('rollover', rollover_shape, bx_transforms.rollover_func, 'application/json')
+xformer.register_transform('bidding_status', default, bx_transforms.bidding_status_func, 'application/json')
 
 #-- endpoints -----------------
 
@@ -342,8 +363,62 @@ def sms_responder():
         log.error("Exception thrown: ", exc_info=1)        
         raise err
 
-@app.route('/bidders', methods=['GET'])
-def active_job_bidders():
+@app.route('/openbidding', methods=['POST'])
+def open_bidding():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('open_bidding', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('open_bidding')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/closebidding', methods=['POST'])
+def close_bidding():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('close_bidding', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('close_bidding')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/bids', methods=['GET'])
+def active_job_bids():
     try:
         if app.debug:
             # dump request headers for easier debugging
@@ -354,11 +429,146 @@ def active_job_bidders():
                                 
         input_data.update(request.args)
         
-        transform_status = xformer.transform('active_job_bidders',
+        transform_status = xformer.transform('active_job_bids',
                                              input_data,
                                              headers=request.headers)
                 
-        output_mimetype = xformer.target_mimetype_for_transform('active_job_bidders')
+        output_mimetype = xformer.target_mimetype_for_transform('active_job_bids')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/policy', methods=['GET'])
+def bidding_policy():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                                
+        input_data.update(request.args)
+        
+        transform_status = xformer.transform('bidding_policy',
+                                             input_data,
+                                             headers=request.headers)
+                
+        output_mimetype = xformer.target_mimetype_for_transform('bidding_policy')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/award', methods=['POST'])
+def award_job():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('award_job', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('award_job')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/rebroadcast', methods=['POST'])
+def rebroadcast():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('rebroadcast', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('rebroadcast')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/roll', methods=['POST'])
+def rollover():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                
+        request.get_data()
+        input_data.update(core.map_content(request))
+        
+        transform_status = xformer.transform('rollover', input_data, headers=request.headers)
+
+                
+        output_mimetype = xformer.target_mimetype_for_transform('rollover')
+
+        if transform_status.ok:
+            return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)
+        return Response(json.dumps(transform_status.user_data), 
+                        status=transform_status.get_error_code() or snap.HTTP_DEFAULT_ERRORCODE, 
+                        mimetype=output_mimetype) 
+    except Exception as err:
+        log.error("Exception thrown: ", exc_info=1)        
+        raise err
+
+@app.route('/bidstat', methods=['GET'])
+def bidding_status():
+    try:
+        if app.debug:
+            # dump request headers for easier debugging
+            log.info('### HTTP request headers:')
+            log.info(request.headers)
+
+        input_data = {}
+                                
+        input_data.update(request.args)
+        
+        transform_status = xformer.transform('bidding_status',
+                                             input_data,
+                                             headers=request.headers)
+                
+        output_mimetype = xformer.target_mimetype_for_transform('bidding_status')
 
         if transform_status.ok:
             return Response(transform_status.output_data, status=snap.HTTP_OK, mimetype=output_mimetype)

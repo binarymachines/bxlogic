@@ -32,7 +32,6 @@ TODO: if a courier accepts only one phase of an advertised job:
 Once all phases are accepted, ensure that the multiple assigned couriers are notified of their respective
 assignments.
 
-
 '''
 
 SMSCommandSpec = namedtuple('SMSCommandSpec', 'command definition synonyms tag_required')
@@ -45,7 +44,7 @@ INTEGER_RX = re.compile(r'^[0-9]+$')
 RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
 
 SMS_SYSTEM_COMMAND_SPECS = {
-    'bid': SMSCommandSpec(command='bid', definition='Bid to accept a job', synonyms=[], tag_required=True),
+    'bid': SMSCommandSpec(command='bid', definition='Bid for a delivery job', synonyms=[], tag_required=True),
     'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
     'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
@@ -150,6 +149,18 @@ class ObjectFactory(object):
         kwargs['write_ts'] = datetime.datetime.now()
         return JobBid(**kwargs)
 
+    @classmethod
+    def create_bidding_window(cls, db_svc, **kwargs):
+        policy = {            
+            "limit_type": "time_seconds",
+            "limit": 15,
+        }
+        
+        BiddingWindow = db_svc.Base.classes.bidding_windows
+        kwargs['open_ts'] = datetime.datetime.now()
+        kwargs['policy'] = policy
+        return BiddingWindow(**kwargs)
+
 
 def lookup_transport_method_ids(name_array, session, db_svc):
     TransportMethod = db_svc.Base.classes.transport_methods
@@ -219,13 +230,56 @@ def lookup_courier_by_id(courier_id, session, db_svc):
         return None
 
 
+def lookup_bidding_window_by_id(window_id, session, db_svc):
+    BiddingWindow = db_svc.Base.classes.bidding_windows
+    try:
+        return session.query(BiddingWindow).filter(BiddingWindow.id == window_id).one()
+    except NoResultFound:
+        return None
+
+
+def lookup_open_bidding_window_by_job_tag(job_tag, session, db_svc):
+    current_time = datetime.datetime.now()
+    BiddingWindow = db_svc.Base.classes.bidding_windows
+    try:
+        return session.query(BiddingWindow).filter(and_(BiddingWindow.job_tag == job_tag,
+                                                        BiddingWindow.open_ts <= current_time,
+                                                        or_(BiddingWindow.close_ts == None,
+                                                            BiddingWindow.close_ts > current_time))).one()
+    except NoResultFound:
+        return None
+
+
+
+def lookup_open_bidding_windows(session, db_svc):
+    current_time = datetime.datetime.now()
+    BiddingWindow = db_svc.Base.classes.bidding_windows
+    
+    resultset =  session.query(BiddingWindow).filter(and_(BiddingWindow.open_ts <= current_time,
+                                                    or_(BiddingWindow.close_ts == None,
+                                                        BiddingWindow.close_ts > current_time))).all()
+
+    for record in resultset:
+        yield record
+    
+
+
+def bidding_is_open_for_job(job_tag, session, db_svc):
+    current_time = datetime.datetime.now()
+    for window in lookup_bidding_windows_by_job_tag(job_tag, session, db_svc):
+        if window.open_ts <= current_time and window.close_ts > current_time:
+            return True
+        
+    return False
+
+
 def job_is_available(job_tag, session, db_svc):
     JobStatus = db_svc.Base.classes.job_status
     try:
         # status 0 is "broadcast" (available for bidding); status 1 is "accepted-partial" (more than one assignee for the job)
         status_record = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
                                                              JobStatus.job_tag == job_tag, 
-                                                            or_(JobStatus.status == 0, JobStatus.status == 1))).one()
+                                                             or_(JobStatus.status == 0, JobStatus.status == 1))).one()
         return True
     except NoResultFound:
         return False                                                            
@@ -247,6 +301,16 @@ def prepare_courier_record(input_data, session, db_svc):
     output_record['mobile_number'] = normalize_mobile_number(input_data['mobile_number'])
     output_record['duty_status'] = 0    # 0 is inactive, 1 is active
 
+    return output_record
+
+
+def prepare_bid_window_record(input_data, session, db_svc):
+    output_record = copy_fields_from(input_data, 'job_tag')
+    job = lookup_job_data_by_tag(input_data['job_tag'], session, db_svc)
+    if not job:
+        raise Exception('no job found with tag %s.' % input_data['job_tag'])
+
+    output_record['job_id'] = job.id
     return output_record
 
 
@@ -279,6 +343,19 @@ def ok_status(message, **kwargs):
 
     if kwargs:
         result['data'] = kwargs
+
+    return json.dumps(result)
+
+
+def exception_status(err, **kwargs):
+    result = {
+        'status': 'error',
+        'error_type': err.__class__.__name__,
+        'message': 'an exception of type %s occurred: %s' % (err.__class__.__name__, str(err))
+    }
+
+    if kwargs:
+        result.update(**kwargs)
 
     return json.dumps(result)
 
@@ -326,26 +403,40 @@ def new_job_func(input_data, service_objects, **kwargs):
     raw_record = None
     couriers = None
     with db_svc.txn_scope() as session:
-        raw_record = prepare_job_record(input_data, session, db_svc)
-        job = ObjectFactory.create_job(db_svc, **raw_record)
-        session.add(job)
-        session.flush()
-        job_id = job.id
+        try:
+            raw_record = prepare_job_record(input_data, session, db_svc)
+            job = ObjectFactory.create_job(db_svc, **raw_record)
+            session.add(job)
+            session.flush()
+            job_id = job.id
 
-        status_record = ObjectFactory.create_job_status(db_svc,
-                                                        job_tag=raw_record['job_tag'],
-                                                        status=0,
-                                                        write_ts=datetime.datetime.now())
-        session.add(status_record)
+            status_record = ObjectFactory.create_job_status(db_svc,
+                                                            job_tag=raw_record['job_tag'],
+                                                            status=0,
+                                                            write_ts=datetime.datetime.now())
+            session.add(status_record)
 
-    raw_record['id'] = job_id
-    pipeline_svc = service_objects.lookup('job_pipeline')
-    s3_svc = service_objects.lookup('s3')
-    pipeline_svc.post_job_notice(raw_record['job_tag'],
-                                 s3_svc, 
-                                 job_data=raw_record)
+            # we've created a job, now open it up for bids
+            bidding_window = ObjectFactory.create_bidding_window(db_svc,
+                                                                 job_id=job_id,
+                                                                 job_tag=raw_record['job_tag'])
+            session.add(bidding_window)
 
-    return core.TransformStatus(ok_status('new Job created', data=raw_record))
+            # now push the job notification to S3, which will broadcast the event
+            # to the courier network
+            raw_record['id'] = job_id
+            pipeline_svc = service_objects.lookup('job_pipeline')
+            s3_svc = service_objects.lookup('s3')
+            pipeline_svc.post_job_notice(raw_record['job_tag'],
+                                        s3_svc, 
+                                        job_data=raw_record)
+
+            return core.TransformStatus(ok_status('new Job created', data=raw_record))
+
+        except Exception as err:
+            session.rollback()
+            return core.TransformStatus(exception_status(err), False, message=str(err))
+
 
 
 def new_client_func(input_data, service_objects, **kwargs):
@@ -508,7 +599,7 @@ def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
 
 def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
     if not cmd_object.job_tag:
-        return 'Bid for a job by texting the job tag, space, and "bid".' 
+        return 'Bid for a job by texting the job tag, space, and "bid".'
 
     if not is_valid_job_tag(cmd_object.job_tag):
         return REPLY_INVALID_TAG_TPL % cmd_object.job_tag
@@ -524,12 +615,16 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
                             ])
         
         if not courier_is_on_duty(dlg_context.courier.id, session, db_svc):
-            return '\n'.join([
-                'Hello %s, you are attempting to bid on a job,' % dlg_context.courier.first_name,
-                'but you are not currently on the duty roster.',
-                'Text "on" to go on duty.'
-            ])
-
+            # automatically place this courier on the duty roster
+            payload = {
+                'id': dlg_context.courier.id,
+                'status': 1 # 1 means on-duty
+            }
+            transform_status = update_courier_status_func(payload, service_objects, **kwargs)
+            if not transform_status['status'].ok:
+                print(transform_status)
+                return 'There was an error attempting to auto-update your duty status. Please contact your administrator.'
+        
         # only one bid per user (TODO: pluggable bidding policy)
         if courier_has_bid(dlg_context.courier.id, cmd_object.job_tag, session, db_svc):
             return '\n'.join([
@@ -539,9 +634,18 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
                 "Good luck!"
             ])
 
+        bidding_window = lookup_open_bidding_window_by_job_tag(cmd_object.job_tag, session, db_svc)
+        if not bidding_window:
+            return '\n'.join([
+                "Sorry, the bidding window for job:",
+                cmd_object.job_tag,
+                "has closed."
+            ])
+
         # job exists and is available, so bid for it
         kwargs['job_tag'] = cmd_object.job_tag
         bid = ObjectFactory.create_job_bid(db_svc,
+                                           bidding_window_id=bidding_window.id,
                                            courier_id=dlg_context.courier.id,
                                            job_tag=cmd_object.job_tag)
         session.add(bid)
@@ -614,7 +718,6 @@ def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
     return "Recording job cancellation for job tag: %s" % cmd_object.job_tag
     
 
-
 def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
     # TODO: update status table
@@ -662,13 +765,12 @@ def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_r
 
     tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
     if len(tokens) == 1:
-        # show all my assigned jobs
+        # show all my awarded jobs
         return "<placeholder for listing ALL jobs awarded to (not yet accepted by) this courier>"
 
     else:
         # show a subset of my assigned jobs
         return "<placeholder for showing the Nth job awarded to (not yet accepted by) this courier>"
-
 
 
 def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
@@ -738,7 +840,6 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
 
             elif extension_is_range(ext):
                 # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
-
                 return "<placeholder for showing N through M open jobs>"
                 
 
@@ -893,14 +994,59 @@ def update_courier_status_func(input_data, service_objects, **kwargs):
     return core.TransformStatus(ok_status('update courier status', updated=did_update, id=courier_id, duty_status=new_status))
 
 
-def active_job_bidders_func(input_data, service_objects, **kwargs):
-    '''Return a list of couriers who have bid on the job passed in the input data,
+def open_bidding_func(input_data, service_objects, **kwargs):
+    '''Open a bidding window on the job with the job_tag passed in the inputs
+    '''
+
+    bidding_window = None
+    db_svc = service_objects.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        input_record = prepare_bid_window_record(input_data, session, db_svc)
+        bidding_window = ObjectFactory.create_bidding_window(db_svc, **input_record)
+        session.add(bidding_window)
+        session.flush()
+
+    return core.TransformStatus(ok_status('open bidding window',
+                                          id=bidding_window.id,
+                                          job_id=bidding_window.job_id,
+                                          job_tag=bidding_window.job_tag))
+
+
+def close_bidding_func(input_data, service_objects, **kwargs):
+    '''Close the bidding window with the ID passed in the inputs
+    '''
+
+    bidding_window = None
+    db_svc = service_objects.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        bidding_window = lookup_bidding_window_by_id(input_data['id'], session, db_svc)
+        if not bidding_window:
+            return core.TransformStatus(ok_status('close bidding window',
+                                                  id=input_data['id'],
+                                                  message='window not found'))
+
+        window.close_ts = datetime.datetime.now()
+
+    return core.TransformStatus(ok_status('close bidding window',
+                                          id=input_data['id']))                                             
+
+
+
+def active_job_bids_func(input_data, service_objects, **kwargs):
+    '''Return a list of bids on the job passed in the input data,
     provided the job is active (calling this function against a job whose bidding window 
-    has closed, should return an empty list)
+    has closed, should return an empty list).
+
+    TODO: think about representing bid windows with a bid_windows table. In the current implementation,
+    each bidder only bids once -- but there are use cases in which one might accept multiple bids
+    from a single participant (for example, an actual auction). In such a case, *the expiration of 
+    a bid* is a completely separate matter from *the bidding window itself having closed* (that is, 
+    the auction concluding for a particular item), because each bid from a given participant auto-expires
+    his previous bid -- but the bidding window is obviously still open. --DT
     '''
 
     job_tag = input_data['job_tag']
-    courier_list = []
+    bid_list = []
     db_svc = service_objects.lookup('postgres')
     JobBid = db_svc.Base.classes.job_bids
     Courier = db_svc.Base.classes.couriers
@@ -911,7 +1057,10 @@ def active_job_bidders_func(input_data, service_objects, **kwargs):
                                                                 JobBid.accepted_ts == None,
                                                                 JobBid.expired_ts == None)).all(): 
 
-            courier_list.append({
+            bid_list.append({
+                'bid_id': jb.id,
+                'job_tag': jb.job_tag,
+                'courier_id': c.id,
                 'first_name': c.first_name,
                 'last_name': c.last_name,
                 'mobile_number': c.mobile_number
@@ -919,4 +1068,37 @@ def active_job_bidders_func(input_data, service_objects, **kwargs):
 
     return core.TransformStatus(ok_status('get active job bidders', couriers=courier_list))
 
+
+
+def award_job_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('award_job_func')
+
+
+def rebroadcast_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('rebroadcast_func')
+
+
+def rollover_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('rollover_func')
+
+
+
+def bidding_policy_func(input_data, service_objects, **kwargs):
+    raise snap.TransformNotImplementedException('bidding_policy_func')
+
+
+def bidding_status_func(input_data, service_objects, **kwargs):
+
+    windows = []
+    db_svc = service_objects.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        for bwindow in lookup_open_bidding_windows(session, db_svc):
+            windows.append({
+                'job_id': bwindow.job_id,
+                'job_tag': bwindow.job_tag,
+                'policy': bwindow.policy,
+                'open_ts': bwindow.open_ts.isoformat()
+            })
+
+    return core.TransformStatus(ok_status('bidstat', bidding_windows=windows))
 

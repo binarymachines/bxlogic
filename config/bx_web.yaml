@@ -163,7 +163,7 @@ data_shapes:
         datatype: int
         required: True
 
-  job_bidders_shape:
+  job_bids_shape:
     fields:
       - name: job_tag
         datatype: str
@@ -223,6 +223,44 @@ data_shapes:
         datatype: str
         required: False
 
+  open_bidding_shape:
+    fields:
+      - name: job_tag
+        datatype: str
+        required: True
+
+  close_bidding_shape:
+    fields:
+      - name: job_tag
+        datatype: str
+        required: True
+
+  rebroadcast_shape:
+    fields:
+      - name: job_tag
+        datatype: str
+        required: True
+
+  rollover_shape:
+    fields:
+      - name: job_tag
+        datatype: str
+        required: True
+
+  award_job_shape:
+    fields:
+      - name: window_id
+        datatype: str
+        required: True
+
+      - name: job_tag
+        datatype: str
+        required: True
+
+      - name: couriers
+        datatype: list
+        required: True
+
 transforms:
   ping:
     route:              /ping
@@ -278,10 +316,22 @@ transforms:
     input_shape:        default
     output_mimetype:    text/json
 
-  active_job_bidders:
-    route:              /bidders
+  open_bidding:
+    route:              /openbidding
+    method:             POST
+    input_shape:        open_bidding_shape
+    output_mimetype:    application/json
+
+  close_bidding:
+    route:              /closebidding
+    method:             POST
+    input_shape:        close_bidding_shape
+    output_mimetype:    application/json
+
+  active_job_bids:
+    route:              /bids
     method:             GET
-    input_shape:        job_bidders_shape
+    input_shape:        job_bids_shape
     output_mimetype:    application/json
 
   bidding_policy:
@@ -289,6 +339,31 @@ transforms:
     method:             GET
     input_shape:        default
     output_mimetype:    application/json
+
+  award_job:
+    route:              /award
+    method:             POST
+    input_shape:        award_job_shape
+    output_mimetype:    application/json
+
+  rebroadcast:          # re-send SMS notifications of job availability               
+    route:              /rebroadcast
+    method:             POST
+    input_shape:        rebroadcast_shape
+    output_mimetype:    application/json
+
+  rollover:             # close and reopen bid window for an unclaimed job, keeping current bidders
+    route:              /roll
+    method:             POST
+    input_shape:        rollover_shape
+    output_mimetype:    application/json
+
+  bidding_status:
+    route:              /bidstat
+    method:             GET
+    input_shape:        default
+    output_mimetype:   application/json
+
 
 decoders:
   application/json; charset=utf-8: decode_json
