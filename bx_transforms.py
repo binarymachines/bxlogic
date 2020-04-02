@@ -581,20 +581,42 @@ def compile_help_string():
 
 
 def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO: update duty status; short-circuit if already on
-    return '\n'.join([
-        'Hello %s, welcome to the on-call roster.' % dlg_context.courier.first_name, 
-        'Reply to advertised job tags with the tag and "acc" to accept a job.',
-        'Text "hlp" or "?" at any time to see the command codes.'
-    ])
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        courier = lookup_courier_by_id(dlg_context.courier.id, session, db_svc)
+        if courier.duty_status == 1:
+            return '\n'.join([
+                'Hello %s, you are already on the duty roster.' % dlg_context.courier.first_name,
+                'The system will automatically notify you when a job is posted.'
+            ])
+        else:
+            courier.duty_status = 1
+            session.flush()
+            return '\n'.join([
+                'Hello %s, welcome to the on-call roster.' % dlg_context.courier.first_name, 
+                'Reply to advertised job tags with the tag and "acc" to accept a job.',
+                'Text "hlp" or "?" at any time to see the command codes.'
+            ])
 
 
 def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO update duty status; short-circuit if already off
-    return '\n'.join([
-        'Hello %s, you are now leaving the on-call roster.' % dlg_context.courier.first_name,
-        'Thank you for your service. Have a good one!'
-    ])
+    # TODO remove courier from any open bidding pools
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        courier = lookup_courier_by_id(dlg_context.courier.id, session, db_svc)
+        if courier.duty_status == 0:
+            return '\n'.join([
+                'Hello %s, you are already off duty.' % dlg_context.courier.first_name,
+                'Enjoy the downtime!'
+            ])
+
+        else:
+            courier.duty_status = 0
+            session.flush()
+            return '\n'.join([
+                'Hello %s, you are now leaving the on-call roster.' % dlg_context.courier.first_name,
+                'Thank you for your service. Have a good one!'
+            ])
 
 
 def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
