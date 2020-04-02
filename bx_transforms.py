@@ -4,14 +4,14 @@ import re
 import uuid
 import json
 import datetime
-from urllib.parse import quote, unquote_plus
+from urllib.parse import unquote_plus
 from collections import namedtuple
 from snap import snap, common
 from snap import core
-from snap.loggers import transform_logger as log
-from sqlalchemy.sql import text
+# from snap.loggers import transform_logger as log
+# from sqlalchemy.sql import text
 import git
-import constants as const
+# import constants as const
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy import and_, or_
 
@@ -36,6 +36,7 @@ assignments.
 
 SMSCommandSpec = namedtuple('SMSCommandSpec', 'command definition synonyms tag_required')
 SMSGeneratorSpec = namedtuple('SMSGeneratorSpec', 'command definition specifier')
+SMSPrefixSpec = namedtuple('SMSPrefixSpec', 'command definition defchar')
 
 SYSTEM_ID = 'bxlog'
 NETWORK_ID = 'ccr'
@@ -44,7 +45,7 @@ INTEGER_RX = re.compile(r'^[0-9]+$')
 RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
 
 SMS_SYSTEM_COMMAND_SPECS = {
-    'bid': SMSCommandSpec(command='bid', definition='Bid for a delivery job', synonyms=[], tag_required=True),
+    'bid': SMSCommandSpec(command='bid',definition='Bid for a delivery job', synonyms=[], tag_required=True),
     'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
     'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
@@ -58,9 +59,13 @@ SMS_SYSTEM_COMMAND_SPECS = {
 }
 
 SMS_GENERATOR_COMMAND_SPECS = {
-    'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.'), 
+    'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.'),
     'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.'),
     'awd': SMSGeneratorSpec(command='asg', definition='List my awarded (but not yet accepted) jobs', specifier='.')
+}
+
+SMS_PREFIX_COMMAND_SPECS = {
+    '@': SMSPrefixSpec(command='@', definition='create a user-defined macro', defchar=':')
 }
 
 SMS_RESPONSES = {
@@ -76,8 +81,10 @@ REPLY_CMD_FORMAT = "You have texted a command that requires a job tag. Text the 
 REPLY_CMD_HELP_AVAILABLE = 'Text "help" to the target number to get a list of command strings and what they do.'
 REPLY_INVALID_TAG_TPL = 'The job tag you have specified (%s) appears to be invalid.'
 
+
 def generate_assign_job_reply(**kwargs):
     return REPLY_ASSIGN_JOB_TPL.format(**kwargs)
+
 
 def generate_get_involved_reply(**kwargs):
     return REPLY_GET_INVOLVED_TPL.format(**kwargs)
@@ -87,7 +94,7 @@ def copy_fields_from(source_dict, *fields):
     output_dict = {}
     for field in fields:
         output_dict[field] = source_dict.get(field)
-    
+
     return output_dict
 
 
@@ -136,6 +143,7 @@ class ObjectFactory(object):
     @classmethod
     def create_job(cls, db_svc, **kwargs):
         Job = db_svc.Base.classes.job_data
+        kwargs['created_ts'] = datetime.datetime.now()
         return Job(**kwargs)
 
     @classmethod
@@ -155,7 +163,7 @@ class ObjectFactory(object):
             "limit_type": "time_seconds",
             "limit": 15,
         }
-        
+
         BiddingWindow = db_svc.Base.classes.bidding_windows
         kwargs['open_ts'] = datetime.datetime.now()
         kwargs['policy'] = policy
@@ -316,18 +324,18 @@ def prepare_bid_window_record(input_data, session, db_svc):
 
 def prepare_job_record(input_data, session, db_svc):
     output_record = copy_fields_from(input_data,
-                                    'client_id',
-                                    'delivery_address',
-                                    'delivery_borough',
-                                    'delivery_zip',
-                                    'delivery_neighborhood',
-                                    'pickup_address',
-                                    'pickup_borough',
-                                    'pickup_neighborhood',
-                                    'pickup_zip',
-                                    'items',
-                                    'delivery_window_open',
-                                    'delivery_window_close')
+                                     'client_id',
+                                     'delivery_address',
+                                     'delivery_borough',
+                                     'delivery_zip',
+                                     'delivery_neighborhood',
+                                     'pickup_address',
+                                     'pickup_borough',
+                                     'pickup_neighborhood',
+                                     'pickup_zip',
+                                     'items',
+                                     'delivery_window_open',
+                                     'delivery_window_close')
 
     borough_tag = input_data['delivery_borough'].lstrip().rstrip().lower().replace(' ', '_')
     output_record['payment_method'] = lookup_payment_method_id(input_data['payment_method'], session, db_svc)
@@ -401,7 +409,7 @@ def new_job_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
     job_id = None
     raw_record = None
-    couriers = None
+
     with db_svc.txn_scope() as session:
         try:
             raw_record = prepare_job_record(input_data, session, db_svc)
@@ -428,8 +436,8 @@ def new_job_func(input_data, service_objects, **kwargs):
             pipeline_svc = service_objects.lookup('job_pipeline')
             s3_svc = service_objects.lookup('s3')
             pipeline_svc.post_job_notice(raw_record['job_tag'],
-                                        s3_svc, 
-                                        job_data=raw_record)
+                                         s3_svc, 
+                                         job_data=raw_record)
 
             return core.TransformStatus(ok_status('new Job created', data=raw_record))
 
@@ -478,16 +486,16 @@ class UnrecognizedSMSCommand(Exception):
 
 SystemCommand = namedtuple('SystemCommand', 'job_tag cmdspec modifiers')
 GeneratorCommand = namedtuple('GeneratorCommand', 'cmd_string cmdspec modifiers')
-HashtagCommand = namedtuple('HashtagCommand', 'tag')
+PrefixCommand = namedtuple('PrefixCommand', 'mode name body cmdspec')
 
-CommandInput = namedtuple('CommandInput', 'cmd_type cmd_object') # command types: generator, syscommand, hashtag
+CommandInput = namedtuple('CommandInput', 'cmd_type cmd_object')  # command types: generator, syscommand, prefix
 
 
 def parse_sms_message_body(raw_body):
     job_tag = None
     command_string = None
     modifiers = []
-    
+
     # make sure there's no leading whitespace, then see what we've got
     body = unquote_plus(raw_body).lstrip().rstrip()
 
@@ -511,8 +519,29 @@ def parse_sms_message_body(raw_body):
             command_string = tokens[1].lower()
             modifiers = tokens[2:]
     
-    elif body.startswith('#'):
-        return CommandInput(cmd_type='hashtag', cmd_object=Hashtag('#%s' % body[1:].lower()))
+    elif body[0] in SMS_PREFIX_COMMAND_SPECS.keys():
+        prefix = body[0]
+        prefix_spec = SMS_PREFIX_COMMAND_SPECS[prefix]
+        
+        if len(body) == 1:
+            return SMS_PREFIX_COMMAND_SPECS[prefix].definition
+
+        raw_body = body[1:].lower()
+        defchar_index = raw_body.find(prefix_spec.defchar)
+        if defchar_index > 0:            
+            command_mode = 'define'
+            command_name = raw_body[0:defchar_index]
+            command_data = raw_body[defchar_index+1:]
+        else:
+            command_mode = 'execute'
+            command_name = raw_body
+            command_data = None
+        
+        return CommandInput(cmd_type='prefix',
+                            cmd_object=PrefixCommand(mode=command_mode,
+                                                     name=command_name,
+                                                     body=command_data,
+                                                     cmdspec=prefix_spec))
 
     else:
         tokens = [token.lstrip().rstrip() for token in body.split(' ') if token]
@@ -523,7 +552,9 @@ def parse_sms_message_body(raw_body):
             print('###------------ detected GENERATOR-type command: %s' % command_string)
             generator_spec = lookup_generator_command(command_string)
             return CommandInput(cmd_type='generator',
-                                cmd_object=GeneratorCommand(cmd_string=command_string, cmdspec=generator_spec, modifiers=modifiers))
+                                cmd_object=GeneratorCommand(cmd_string=command_string,
+                                                            cmdspec=generator_spec,
+                                                            modifiers=modifiers))
 
     print('looking up SMS command: %s' % command_string)
     cmd_spec = lookup_sms_command(command_string)
@@ -862,8 +893,32 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
 
             elif extension_is_range(ext):
                 # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
-                return "<placeholder for showing N through M open jobs>"
+                tokens = ext.split('-')
+                if len(tokens) != 2:
+                    return 'The range extension for this command must be formatted as A-B where A and B are integers.'
+
+                min_index = int(tokens[0])
+                max_index = int(tokens[1])
                 
+                if min_index > max_index:
+                    return 'The first number in your range specification A-B must be less than or equal to the second number.'
+
+                if max_index > len(jobs):
+                    return "There are only %d jobs open." % len(jobs)
+
+                if min_index == 0:
+                    return "You may not request the 0th element of a list. (This stack was written in Python, but the UI is in English.)"
+
+                lines = []
+                for index in range(min_index, max_index+1):
+                    lines.append('# %d: %s' % (index, jobs[index-1].job_tag))
+                
+                return '\n\n'.join(lines)
+
+
+def pfx_command_macro(prefix_cmd, dlg_engine, dialog_context, service_registry):
+    return '<placeholder for macro command, %s mode>' % prefix_cmd.mode
+
 
 SMSDialogContext = namedtuple('SMSDialogContext', 'courier source_number message')
 
@@ -871,18 +926,24 @@ class DialogEngine(object):
     def __init__(self):
         self.msg_dispatch_tbl = {}
         self.generator_dispatch_tbl = {}
+        self.prefix_dispatch_tbl = {}
 
 
     def register_cmd_spec(self, sms_command_spec, handler_func):
         self.msg_dispatch_tbl[str(sms_command_spec)] = handler_func
 
-
     def register_generator_cmd(self, generator_cmd_spec, handler_func):
         self.generator_dispatch_tbl[str(generator_cmd_spec)] = handler_func
 
+    def register_prefix_cmd(self, prefix_spec, handler_func):
+        self.prefix_dispatch_tbl[str(prefix_spec)] = handler_func
 
-    def _reply_hashtag_command(self, hashtag_cmd, dialog_context, service_registry, **kwargs):
-        return 'placeholder for hashtag response'
+
+    def _reply_prefix_command(self, prefix_cmd, dialog_context, service_registry, **kwargs):
+        command = self.prefix_dispatch_tbl.get(str(prefix_cmd.cmdspec))
+        if not command:
+            return 'No handler registered in SMS DialogEngine for prefix command %s.' % prefix_cmd.cmdspec.command
+        return command(prefix_cmd, self, dialog_context, service_registry)
 
 
     def _reply_generator_command(self, gen_cmd, dialog_context, service_registry, **kwargs):
@@ -900,17 +961,20 @@ class DialogEngine(object):
 
 
     def reply_command(self, command_input, dialog_context, service_registry, **kwargs):
-        # command types: generator, syscommand, hashtag
-        if command_input.cmd_type == 'hashtag':
-            return self._reply_hashtag_command(command_input.cmd_object, dialog_context, service_registry)
+        # command types: generator, syscommand, prefix
+        if command_input.cmd_type == 'prefix':
+            return self._reply_prefix_command(command_input.cmd_object, dialog_context, service_registry)
+
         elif command_input.cmd_type == 'syscommand':
             return self._reply_sys_command(command_input.cmd_object, dialog_context, service_registry)
+
         elif command_input.cmd_type == 'generator':
             return self._reply_generator_command(command_input.cmd_object, dialog_context, service_registry)
+
         else:
             raise Exception('Unrecognized command input type %s.' % command_input.cmd_type)
 
-    
+
 def sms_responder_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
     sms_svc = service_objects.lookup('sms')
@@ -932,6 +996,9 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_accepted_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['awd'], generate_list_my_awarded_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
+
+    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['@'], pfx_command_macro)
+    #engine.register_prefix_code(SMS_PREFIX_CODES['#'], command_hashtag)
 
     print('###------ SMS payload:')
     source_number = input_data['From']
