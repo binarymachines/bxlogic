@@ -42,6 +42,7 @@ SYSTEM_ID = 'bxlog'
 NETWORK_ID = 'ccr'
 
 INTEGER_RX = re.compile(r'^[0-9]+$')
+NEG_INTEGER_RX = re.compile(r'^-[0-9]+$')
 RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
 
 SMS_SYSTEM_COMMAND_SPECS = {
@@ -56,6 +57,7 @@ SMS_SYSTEM_COMMAND_SPECS = {
     'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?'], tag_required=False),
     'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[], tag_required=False),
     'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[], tag_required=False)
+
 }
 
 SMS_GENERATOR_COMMAND_SPECS = {
@@ -65,7 +67,9 @@ SMS_GENERATOR_COMMAND_SPECS = {
 }
 
 SMS_PREFIX_COMMAND_SPECS = {
-    '@': SMSPrefixSpec(command='@', definition='create a user-defined macro', defchar=':')
+    '$': SMSPrefixSpec(command='$', definition='create a user-defined macro', defchar=':'),
+    '@': SMSPrefixSpec(command='@', definition="send a message to a user's log via his or her handle", defchar=' '),
+    '&': SMSPrefixSpec(command='&', definition='create a user handle for yourself', defchar=':')
 }
 
 SMS_RESPONSES = {
@@ -169,6 +173,11 @@ class ObjectFactory(object):
         kwargs['policy'] = policy
         return BiddingWindow(**kwargs)
 
+    @classmethod
+    def create_macro(cls, session, db_svc, **kwargs):
+        UserMacro = db_svc.Base.classes.user_macros
+        return UserMacro(**kwargs)
+
 
 def lookup_transport_method_ids(name_array, session, db_svc):
     TransportMethod = db_svc.Base.classes.transport_methods
@@ -258,18 +267,16 @@ def lookup_open_bidding_window_by_job_tag(job_tag, session, db_svc):
         return None
 
 
-
 def lookup_open_bidding_windows(session, db_svc):
     current_time = datetime.datetime.now()
     BiddingWindow = db_svc.Base.classes.bidding_windows
-    
-    resultset =  session.query(BiddingWindow).filter(and_(BiddingWindow.open_ts <= current_time,
+
+    resultset = session.query(BiddingWindow).filter(and_(BiddingWindow.open_ts <= current_time,
                                                     or_(BiddingWindow.close_ts == None,
                                                         BiddingWindow.close_ts > current_time))).all()
 
     for record in resultset:
         yield record
-    
 
 
 def bidding_is_open_for_job(job_tag, session, db_svc):
@@ -277,7 +284,7 @@ def bidding_is_open_for_job(job_tag, session, db_svc):
     for window in lookup_bidding_windows_by_job_tag(job_tag, session, db_svc):
         if window.open_ts <= current_time and window.close_ts > current_time:
             return True
-        
+
     return False
 
 
@@ -290,7 +297,7 @@ def job_is_available(job_tag, session, db_svc):
                                                              or_(JobStatus.status == 0, JobStatus.status == 1))).one()
         return True
     except NoResultFound:
-        return False                                                            
+        return False                                              
 
 
 def list_available_jobs(session, db_svc):
@@ -446,7 +453,6 @@ def new_job_func(input_data, service_objects, **kwargs):
             return core.TransformStatus(exception_status(err), False, message=str(err))
 
 
-
 def new_client_func(input_data, service_objects, **kwargs):
     db_svc = service_objects.lookup('postgres')
     client_id = None
@@ -484,6 +490,11 @@ class UnrecognizedSMSCommand(Exception):
         super().__init__(self, 'Invalid SMS command %s' % cmd_string)
 
 
+class IncompletePrefixCommand(Exception):
+    def __init__(self, cmd_string):
+        super().__init__(self, 'Incomplete prefix command %s' % cmd_string)
+
+
 SystemCommand = namedtuple('SystemCommand', 'job_tag cmdspec modifiers')
 GeneratorCommand = namedtuple('GeneratorCommand', 'cmd_string cmdspec modifiers')
 PrefixCommand = namedtuple('PrefixCommand', 'mode name body cmdspec')
@@ -499,10 +510,9 @@ def parse_sms_message_body(raw_body):
     # make sure there's no leading whitespace, then see what we've got
     body = unquote_plus(raw_body).lstrip().rstrip()
 
-    print('\n\n@__________ inside parse logic. Raw message body is:')
+    print('\n\n###__________ inside parse logic. Raw message body is:')
     print(body)
-    print('@__________\n\n')
-
+    print('###__________\n\n')
 
     if body.startswith('bxlog-'):
         # remove the URL encoded whitespace chars;
@@ -518,22 +528,24 @@ def parse_sms_message_body(raw_body):
         if len(tokens) > 2:
             command_string = tokens[1].lower()
             modifiers = tokens[2:]
-    
+
     elif body[0] in SMS_PREFIX_COMMAND_SPECS.keys():
         prefix = body[0]
         prefix_spec = SMS_PREFIX_COMMAND_SPECS[prefix]
-        
+        print('### probable prefix command "%s". Body length is %d.' % (prefix, len(body)))
         if len(body) == 1:
-            return SMS_PREFIX_COMMAND_SPECS[prefix].definition
+            raise IncompletePrefixCommand(command_string)
 
         raw_body = body[1:].lower()
         defchar_index = raw_body.find(prefix_spec.defchar)
+        # when a prefix command is issued containing a defchar, that is its "extended" mode
         if defchar_index > 0:            
-            command_mode = 'define'
+            command_mode = 'extended'
             command_name = raw_body[0:defchar_index]
             command_data = raw_body[defchar_index+1:]
+        # prefix commands issued without the defchar are running in "simple" mode
         else:
-            command_mode = 'execute'
+            command_mode = 'simple'
             command_name = raw_body
             command_data = None
         
@@ -555,6 +567,8 @@ def parse_sms_message_body(raw_body):
                                 cmd_object=GeneratorCommand(cmd_string=command_string,
                                                             cmdspec=generator_spec,
                                                             modifiers=modifiers))
+        else:
+            raise UnrecognizedSMSCommand(command_string)
 
     print('looking up SMS command: %s' % command_string)
     cmd_spec = lookup_sms_command(command_string)
@@ -571,6 +585,14 @@ def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
     try:
         return session.query(Courier).filter(Courier.mobile_number == mobile_number).one()
     except:
+        return None
+
+
+def lookup_macro(courier_id, macro_name, session, db_svc):
+    Macro = db_svc.Base.classes.user_macros
+    try:
+        return session.query(Macro).filter(Macro.user_id == courier_id, Macro.name == macro_name).one()
+    except NoResultFound:
         return None
 
 
@@ -673,8 +695,8 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
                 'id': dlg_context.courier.id,
                 'status': 1 # 1 means on-duty
             }
-            transform_status = update_courier_status_func(payload, service_objects, **kwargs)
-            if not transform_status['status'].ok:
+            transform_status = update_courier_status_func(payload, service_registry, **kwargs)
+            if not transform_status.ok:
                 print(transform_status)
                 return 'There was an error attempting to auto-update your duty status. Please contact your administrator.'
         
@@ -751,7 +773,7 @@ def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag if courier has more than one job
 
     if not cmd_object.job_tag:
-        return "Please text the tag of the job you're starting, space, then 'er'."
+        return "To notify the network that you're en route, please text the tag of the job you're starting, space, then 'er'."
         
     lines = [
         "You have reported that you're en route for job:",
@@ -799,11 +821,15 @@ def handle_bidding_status_for_job(cmd_object, dlg_context, service_registry, **k
     return "Placeholder for reporting bidding status of a job"
 
 
-def extension_is_integer(ext_string):
+def extension_is_positive_num(ext_string):
     if INTEGER_RX.match(ext_string):
         return True
     return False
 
+def extension_is_negative_num(ext_string):
+    if NEG_INTEGER_RX.match(ext_string):
+        return True
+    return False
 
 def extension_is_range(ext_string):
     if RANGE_RX.match(ext_string):
@@ -863,7 +889,7 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
             # (we have defaulted to a period, but that's settable).
             #
             # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
-            if extension_is_integer(ext):
+            if extension_is_positive_num(ext):
                 list_index=int(ext)
 
                 if list_index > len(jobs):
@@ -875,6 +901,33 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
                 
                 # if the user is extracting a single list element (by using an integer extension), we do 
                 # one of two things. If there were no command modifiers specified, we simply return the element:
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_negative_num(ext):
+                neg_index = int(ext)
+
+                if neg_index == 0:
+                    return '-0 is not a valid negative index. Use -1 to specify the last job in the list.' 
+
+                zero_list_index = len(jobs) + neg_index
+
+                if zero_list_index < 0:
+                    return 'You specified a negative list offset (%d), but there are only %d open jobs.' % (neg_index, len(jobs))
+                list_element = jobs[zero_list_index].job_tag
 
                 if not len(cmd_object.modifiers):
                     return list_element
@@ -916,9 +969,62 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
                 return '\n\n'.join(lines)
 
 
-def pfx_command_macro(prefix_cmd, dlg_engine, dialog_context, service_registry):
-    return '<placeholder for macro command, %s mode>' % prefix_cmd.mode
+def pfx_command_sethandle(prefix_cmd, dlg_engine, dlg_context, service_registry):
+    return "placeholder for setting one's own user handle"
 
+
+def pfx_command_sendlog(prefix_cmd, dlg_engine, dlg_context, service_registry):
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        if prefix_cmd.mode == 'simple':
+            return 'placeholder for sendlog prefix command in simple mode'
+
+        elif prefix_cmd.mode == 'extended':
+            return '\n'.join([
+                'placeholder for sending the message:',
+                '______________\n',
+                prefix_cmd.body,
+                '______________\n',
+                'to user handle %s' % prefix_cmd.name
+            ])
+
+
+def pfx_command_macro(prefix_cmd, dlg_engine, dlg_context, service_registry):
+    # mode is either 'define' or 'execute'
+    macro = None
+    db_svc = service_registry.lookup('postgres')
+
+    with db_svc.txn_scope() as session:
+        # in extended mode, a prefix command contains a name and a body,
+        # separated by the "defchar" found in the prefix's command spec
+        #
+        if prefix_cmd.mode == 'extended': 
+            # TODO: filter out invalid command body strings / check for max length
+            payload = {
+                'user_id': dlg_context.courier.id,
+                'name': prefix_cmd.name,
+                'command_string': prefix_cmd.body
+            }
+
+            macro = ObjectFactory.create_macro(session, db_svc, **payload)
+            session.add(macro)
+            session.flush()
+
+        # in simple mode, a prefix command contains only the command name
+        elif prefix_cmd.mode == 'simple':
+            macro = lookup_macro(dlg_context.courier.id,
+                                 prefix_cmd.name,
+                                 session,
+                                 db_svc)
+            if not macro:
+                return 'No macro %s%s has been registered under your user ID.' % (prefix_cmd.cmdspec.command, prefix_cmd.name)
+
+            chained_command = parse_sms_message_body(macro.command_string)
+            return dlg_engine.reply_command(chained_command, dlg_context, service_registry)            
+
+    print('Courier %s created macro: macro' % macro)
+    return 'Command macro %s%s registered.' % (prefix_cmd.cmdspec.command, prefix_cmd.name)
+        
 
 SMSDialogContext = namedtuple('SMSDialogContext', 'courier source_number message')
 
@@ -997,8 +1103,9 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['awd'], generate_list_my_awarded_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
 
-    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['@'], pfx_command_macro)
-    #engine.register_prefix_code(SMS_PREFIX_CODES['#'], command_hashtag)
+    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['$'], pfx_command_macro)
+    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['@'], pfx_command_sendlog)
+    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['&'], pfx_command_sethandle)
 
     print('###------ SMS payload:')
     source_number = input_data['From']
@@ -1018,7 +1125,7 @@ def sms_responder_func(input_data, service_objects, **kwargs):
             sms_svc.send_sms(mobile_number, REPLY_NOT_IN_NETWORK)
             return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
         
-        session.expunge(courier)
+        session.expunge(courier)        
         
     dlg_context = SMSDialogContext(courier=courier, source_number=mobile_number, message=unquote_plus(raw_message_body))
 
@@ -1030,6 +1137,12 @@ def sms_responder_func(input_data, service_objects, **kwargs):
         sms_svc.send_sms(mobile_number, response)
 
         return core.TransformStatus(ok_status('SMS event received', is_valid_command=True, command=command_input))
+
+    except IncompletePrefixCommand as err:
+        print('Error data: %s' % err)
+        print('#----- Incomplete prefix command: in message body: %s' % raw_message_body)
+        sms_svc.send_sms(mobile_number, SMS_PREFIX_COMMAND_SPECS[raw_message_body].definition)
+        return core.TransformStatus(ok_status('SMS event received', is_valid_command=False))
 
     except UnrecognizedSMSCommand as err:
         print('Error data: %s' % err)
