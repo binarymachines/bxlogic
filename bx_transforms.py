@@ -88,6 +88,10 @@ REPLY_CMD_HELP_AVAILABLE = 'Text "help" to the target number to get a list of co
 REPLY_INVALID_TAG_TPL = 'The job tag you have specified (%s) appears to be invalid.'
 
 
+JOB_STATUS_BROADCAST = 0
+JOB_STATUS_AWARDED = 1
+JOB_STATUS_ACCEPTED = 3
+
 def generate_assign_job_reply(**kwargs):
     return REPLY_ASSIGN_JOB_TPL.format(**kwargs)
 
@@ -334,20 +338,57 @@ def lookup_bid_by_id(bid_id, session, db_svc):
 def job_is_available(job_tag, session, db_svc):
     JobStatus = db_svc.Base.classes.job_status
     try:
-        # status 0 is "broadcast" (available for bidding); status 1 is "accepted-partial" (more than one assignee for the job)
-        status_record = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
-                                                             JobStatus.job_tag == job_tag, 
-                                                             or_(JobStatus.status == 0, JobStatus.status == 1))).one()
+        # status 0 is "broadcast" (available for bidding)
+        session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
+                                             JobStatus.job_tag == job_tag, 
+                                             JobStatus.status == JOB_STATUS_BROADCAST)).one()
         return True
     except NoResultFound:
-        return False                                              
+        return False
+
+
+def job_is_awarded(job_tag, session, db_svc):
+    JobStatus = db_svc.Base.classes.job_status
+    try:
+        # status 1 is "awarded" (bidding is complete and there is a winner)
+        session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
+                                             JobStatus.job_tag == job_tag, 
+                                             JobStatus.status == JOB_STATUS_AWARDED)).one()
+        return True
+    except NoResultFound:
+        return False
+
+
+def list_awarded_jobs(courier_id, session, db_svc):
+    jobs = []
+    JobBid = db_svc.Base.classes.job_bids
+
+    for bid in session.query(JobBid).filter(and_(JobBid.courier_id == courier_id,
+                                                            JobBid.expired_ts == None,
+                                                            JobBid.accepted_ts != None)).all():
+
+        if job_is_awarded(bid.job_tag, session, db_svc):
+            job = lookup_job_data_by_tag(bid.job_tag, session, db_svc)
+            if not job:
+                raise Exception('There is an orphan job in this dataset. Please contact your administrator.')
+            else:
+                jobs.append(job)
+
+    return jobs
+
+    '''
+    # status 1 is "awarded" (granted to winning bidder, but not yet accepted)
+    status_record = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
+                                                            JobStatus.job_tag == job_tag, 
+                                                            JobStatus.status == 1)).one()
+    '''
 
 
 def list_available_jobs(session, db_svc):
     jobs = []
     JobStatus = db_svc.Base.classes.job_status
     resultset = session.query(JobStatus).filter(and_(JobStatus.expired_ts == None,
-                                                     or_(JobStatus.status == 0, JobStatus.status == 1))).all()
+                                                     JobStatus.status == 0)).all()
     for record in resultset:
         jobs.append(record)
 
@@ -551,7 +592,7 @@ def parse_sms_message_body(raw_body):
     modifiers = []
 
     # make sure there's no leading whitespace, then see what we've got
-    body = unquote_plus(raw_body).lstrip().rstrip()
+    body = unquote_plus(raw_body).lstrip().rstrip().lower()
 
     print('\n\n###__________ inside parse logic. Raw message body is:')
     print(body)
@@ -562,7 +603,7 @@ def parse_sms_message_body(raw_body):
         # remove any trailing/leading space chars as well
         tokens = [token.lstrip().rstrip() for token in body.split(' ') if token]
 
-        print('message tokens: %s' % common.jsonpretty(tokens))
+        print('###------ message tokens: %s' % common.jsonpretty(tokens))
 
         job_tag = tokens[0]
         if len(tokens) == 2:
@@ -571,6 +612,14 @@ def parse_sms_message_body(raw_body):
         if len(tokens) > 2:
             command_string = tokens[1].lower()
             modifiers = tokens[2:]
+
+        print('#--------- looking up system SMS command: %s...' % command_string)
+        command_spec = lookup_sms_command(command_string)
+        if command_spec:
+            return CommandInput(cmd_type='syscommand', cmd_object=SystemCommand(job_tag=job_tag,
+                                                                                cmdspec=command_spec,
+                                                                                modifiers=modifiers))
+        raise UnrecognizedSMSCommand(command_string)
 
     elif body[0] in SMS_PREFIX_COMMAND_SPECS.keys():
         prefix = body[0]
@@ -603,25 +652,27 @@ def parse_sms_message_body(raw_body):
         command_string = tokens[0].lower()
         modifiers = tokens[1:]
 
-        if lookup_generator_command(command_string):
-            print('###------------ detected GENERATOR-type command: %s' % command_string)
-            generator_spec = lookup_generator_command(command_string)
+        # see if we received a generator 
+        # (a command which generates a list or a slice of a list)
+        command_spec = lookup_generator_command(command_string)
+        if command_spec:
+            print('###------------ detected GENERATOR-type command: %s' % command_string)            
             return CommandInput(cmd_type='generator',
                                 cmd_object=GeneratorCommand(cmd_string=command_string,
-                                                            cmdspec=generator_spec,
+                                                            cmdspec=command_spec,
                                                             modifiers=modifiers))
-        else:
-            raise UnrecognizedSMSCommand(command_string)
 
-    print('looking up SMS command: %s' % command_string)
-    cmd_spec = lookup_sms_command(command_string)
-    if not cmd_spec:
-        # we do not recognize this command
+        # if we didn't find a generator, perhaps the user issued a regular sms comand                                             
+        command_spec = lookup_sms_command(command_string)
+        if command_spec:
+            print('###------------ detected system command: %s' % command_string)
+            return CommandInput(cmd_type='syscommand',
+                                cmd_object=SystemCommand(job_tag=job_tag,
+                                                         cmdspec=command_spec,
+                                                         modifiers=modifiers))
+    
         raise UnrecognizedSMSCommand(command_string)
-    
-    return CommandInput(cmd_type='syscommand',
-                        cmd_object=SystemCommand(job_tag=job_tag, cmdspec=cmd_spec, modifiers=modifiers))
-    
+
 
 def lookup_courier_by_mobile_number(mobile_number, session, db_svc):
     Courier = db_svc.Base.classes.couriers
@@ -885,13 +936,107 @@ def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_r
     (but not yet accepted).
     '''
 
-    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
-    if len(tokens) == 1:
-        # show all my awarded jobs
-        return "<placeholder for listing ALL jobs awarded to (not yet accepted by) this courier>"
-    else:
-        # show a subset of my assigned jobs
-        return "<placeholder for showing the Nth job awarded to (not yet accepted by) this courier>"
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        jobs = list_awarded_jobs(dlg_context.courier.id, session, db_svc)
+        if not len(jobs):
+            return 'Either you have accepted all your awarded jobs, or you have not been awarded any.'
+
+        tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+        if len(tokens) == 1:
+            # show all job tags in the list
+
+            lines = []
+            index = 1
+            for job in jobs:
+                lines.append("# %d: %s" % (index, job.job_tag))
+                index += 1
+            
+            return '\n\n'.join(lines)
+        else:
+            ext = tokens[1] 
+            # the "extension" is the part of the command string immediately following the specifier character
+            # (we have defaulted to a period, but that's settable).
+            #
+            # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
+            if extension_is_positive_num(ext):
+                list_index=int(ext)
+
+                if list_index > len(jobs):
+                    return "You requested job # %d, but you have only been awarded %d jobs." % (list_index, len(jobs))
+                if list_index == 0:
+                    return "You may not request the 0th element of a list. (Nice try, C programmers.)"
+
+                list_element = jobs[list_index-1].job_tag
+                
+                # if the user is extracting a single list element (by using an integer extension), we do 
+                # one of two things. If there were no command modifiers specified, we simply return the element:
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_negative_num(ext):
+                neg_index = int(ext)
+
+                if neg_index == 0:
+                    return '-0 is not a valid negative index. Use -1 to specify the last job in the list.' 
+
+                zero_list_index = len(jobs) + neg_index
+
+                if zero_list_index < 0:
+                    return 'You specified a negative list offset (%d), but you only have %d awarded jobs.' % (neg_index, len(jobs))
+                list_element = jobs[zero_list_index].job_tag
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_range(ext):
+                # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
+                tokens = ext.split('-')
+                if len(tokens) != 2:
+                    return 'The range extension for this command must be formatted as A-B where A and B are integers.'
+
+                min_index = int(tokens[0])
+                max_index = int(tokens[1])
+                
+                if min_index > max_index:
+                    return 'The first number in your range specification A-B must be less than or equal to the second number.'
+
+                if max_index > len(jobs):
+                    return "There are only %d jobs open." % len(jobs)
+
+                if min_index == 0:
+                    return "You may not request the 0th element of a list. (This stack was written in Python, but the UI is in English.)"
+
+                lines = []
+                for index in range(min_index, max_index+1):
+                    lines.append('# %d: %s' % (index, jobs[index-1].job_tag))
+                
+                return '\n\n'.join(lines)
 
 
 def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
@@ -1398,7 +1543,7 @@ def award_job_func(input_data, service_objects, **kwargs):
 
             # record the winning bids as having been accepted
             for bid_record in input_data['bids']:
-                print('### updating bid %s to accepted...' % bid_record['bid_id'])
+                print('### updating bid to accepted...')
                 bid = lookup_bid_by_id(bid_record['bid_id'], session, db_svc)
                 bid.accepted_ts = current_time
                 session.add(bid)
