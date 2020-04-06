@@ -1,25 +1,23 @@
 #!/usr/bin/env python
 
-import os, sys
+import os
+import sys
+import time
+import urllib
 import json
 from collections import namedtuple
 from contextlib import contextmanager
+from sqlalchemy import MetaData
+from sqlalchemy.ext.automap import automap_base
+from sqlalchemy.orm.session import sessionmaker
+
 import datetime
 
 from snap import common
 
-import yaml
 import requests
 import boto3
 import sqlalchemy as sqla
-from sqlalchemy.ext.automap import automap_base
-from sqlalchemy import Column, ForeignKey, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from sqlalchemy.orm.session import sessionmaker
-from sqlalchemy import create_engine
-from sqlalchemy import MetaData
-from sqlalchemy_utils import UUIDType
 
 from twilio.rest import Client
 
@@ -52,6 +50,7 @@ def parse_date(date_string):
 
 ALLOWED_BIDDING_LIMIT_TYPES = ['time_seconds', 'num_bids']
 
+
 class JobPipelineService(object):
     def __init__(self, **kwargs):
         kwreader = common.KeywordArgReader(*PIPELINE_SVC_PARAM_NAMES)
@@ -67,7 +66,6 @@ class JobPipelineService(object):
 
         self.bid_window_limit = int(kwargs['bid_window_limit'])
 
-
     def post_job_notice(self, tag, s3_svc, **kwargs):
         job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
         payload = kwargs
@@ -77,12 +75,11 @@ class JobPipelineService(object):
         }
         s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
 
-
     def post_job_bid(self, tag, courier_id, s3_svc, **kwargs):
         job_request_s3_key = '%s/%s.json' % (self.posted_jobs_folder, tag)
         payload = kwargs
         s3_svc.upload_json(payload, self.job_bucket_name, job_request_s3_key)
-        
+   
 
 class SMSService(object):
     def __init__(self, **kwargs):
@@ -212,7 +209,7 @@ class S3Key(object):
 
     @property
     def uri(self):
-	    return os.path.join('s3://', self.bucket, self.full_name)
+        return os.path.join('s3://', self.bucket, self.full_name)
 
 
 class S3Service(object):
@@ -244,7 +241,6 @@ class S3Service(object):
                                          aws_secret_access_key=self.aws_secret_access_key)
         else:
             self.s3client = boto3.client('s3', region_name=self.region)
- 
 
     def upload_object(self, local_filename, bucket_name, bucket_path=None):
         s3_path = None
@@ -257,33 +253,30 @@ class S3Service(object):
             self.s3client.upload_fileobj(data, bucket_name, s3_path)
         return S3Key(bucket_name, s3_path)
 
-
     def upload_json(self, data_dict, bucket_name, bucket_path):
         binary_data = bytes(json.dumps(data_dict), 'utf-8')
         self.s3client.put_object(Body=binary_data, 
                                  Bucket=bucket_name, 
                                  Key=bucket_path)
 
-
     def upload_bytes(self, bytes_obj, bucket_name, bucket_path):
         s3_key = bucket_path
         self.s3client.put_object(Body=bytes_obj, Bucket=bucket_name, Key=s3_key)
         return s3_key
-    
 
     def download_json(self, bucket_name, s3_key_string):
         obj = self.s3client.get_object(Bucket=bucket_name, Key=s3_key_string)
         return json.loads(obj['Body'].read().decode('utf-8'))
 
 
-
 class APIError(Exception):
     def __init__(self, url, method, status_code):
-        super().__init__(self, 
-                       'Error sending %s request to URL %s: status code %s' % (method, url, status_code))
+        super().__init__(self,
+                         'Error sending %s request to URL %s: status code %s' % (method, url, status_code))
 
 
 APIEndpoint = namedtuple('APIEndpoint', 'host port path method')
+
 
 class BXLogicAPIService(object):
     def __init__(self, **kwargs):
@@ -298,41 +291,40 @@ class BXLogicAPIService(object):
         self.poll_job_bids = APIEndpoint(host=self.hostname, port=self.port, path='bids', method='GET')
         self.couriers = APIEndpoint(host=self.hostname, port=self.port, path='couriers', method='GET')
         self.bidstat = APIEndpoint(host=self.hostname, port=self.port, path='bidstat', method='GET')
-
+        self.award = APIEndpoint(host=self.hostname, port=self.port, path='award', method='POST')
 
     def endpoint_url(self, api_endpoint, **kwargs):
-        if kwargs.get('ssl') == True:
+        if kwargs.get('ssl') is True:
             scheme = 'https'
         else:
             scheme = 'http'
-            
-        url = '{scheme}://{host}:{port}'.format(scheme=scheme, host=api_endpoint.host, port=api_endpoint.port)
-        return os.path.join(url, api_endpoint.path)
 
+        url = '{scheme}://{host}:{port}'.format(scheme=scheme,
+                                                host=api_endpoint.host,
+                                                port=api_endpoint.port)
+
+        return os.path.join(url, api_endpoint.path)
 
     def _call_endpoint(self, endpoint, payload, **kwargs):        
         url_path = self.endpoint_url(endpoint, **kwargs)
-        if endpoint.method == 'GET':                        
+        if endpoint.method == 'GET':
             print('calling endpoint %s using GET with payload %s...' % (url_path, payload))
             return requests.get(url_path, params=payload)
         if endpoint.method == 'POST':
             print('calling endpoint %s using POST with payload %s...' % (url_path, payload))
             return requests.post(url_path, data=payload)
 
-
-    def award_job(job_tag, bid_window_id, couriers, **kwargs):
+    def award_job(self, bid_window_id, bidder_array, **kwargs):
         payload = {
             'window_id': bid_window_id,
-            'job_tag': job_tag,
-            'couriers': couriers
+            'bids': bidder_array
         }
         response = self._call_endpoint(self.award, payload, **kwargs)
         return response
 
     def get_open_bid_windows(self, **kwargs):
-        payload= {}
+        payload = {}
         return self._call_endpoint(self.bidstat, payload, **kwargs)
-
 
     def get_active_job_bids(self, job_tag, **kwargs):
         payload = {'job_tag': job_tag}
@@ -341,14 +333,12 @@ class BXLogicAPIService(object):
                                        **kwargs)
         return response
 
-
     def get_available_couriers(self, **kwargs):
         payload = { 'status': 1 }
         response = self._call_endpoint(self.couriers,
                                        payload, 
                                        **kwargs)
         return response
-
 
     def notify_job_completed(self, job_tag, **kwargs):
         print('### signaling completion for job tag %s' % job_tag)
@@ -360,7 +350,6 @@ class BXLogicAPIService(object):
                            self.update_job_status.method,
                            response.status_code)
 
-
     def notify_job_canceled(self, job_tag, **kwargs):
         print('### --- signaling cancellation for job tag %s' % job_tag)
         response = self._call_endpoint(self.update_job_status,
@@ -371,7 +360,6 @@ class BXLogicAPIService(object):
                            self.update_job_status.method,
                            response.status_code)
 
-    
     def send_log_msg(self, job_tag, raw_message):
         print('### sending message to joblog for tag %s' % job_tag)
         message = urllib.parse.quote(raw_message)

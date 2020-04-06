@@ -253,11 +253,7 @@ data_shapes:
         datatype: str
         required: True
 
-      - name: job_tag
-        datatype: str
-        required: True
-
-      - name: couriers
+      - name: bids
         datatype: list
         required: True
 

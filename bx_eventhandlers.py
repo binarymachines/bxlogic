@@ -1,16 +1,15 @@
 #!/usr/bin/env python
 
-import os, sys
+import sys
 import dateutil.parser
 import traceback
 import json
 import time
 import random
 import datetime
-from contextlib import contextmanager
 from contextlib import ContextDecorator
 from snap import common
-from mercury import journaling as jrnl
+#from mercury import journaling as jrnl
 from bx_services import S3Key
 
 
@@ -27,7 +26,7 @@ class NoHandlerRegisteredForJobType(Exception):
 class start_timer(ContextDecorator):
     def __init__(self):
         super().__init__()
-        self.start_time = None 
+        self.start_time = None
 
     def __enter__(self):
         self.start_time = time.time()
@@ -43,28 +42,26 @@ class start_timer(ContextDecorator):
         return False
 
 
-def determine_job_type(jsondata):
-    job_tag = jsondata['job_tag']
-    raise UnrecognizedJobType(job_tag)
-
-
+'''
 def get_handler_for_job_type(job_type):
     handler_func = JOB_DISPATCH_TABLE.get(job_type)
     if not handler_func:
         raise NoHandlerRegisteredForJobType(job_type)
 
     return handler_func
+'''
 
 
-def handle_pending_arbitration(jsondata, service_registry):
-    # Decide which bidder gets assigned a job, using a simple random selector. This is only for the proof of concept;
-    # we will upgrade to smarter (and user-pluggable) arbitration methods once we shake the system out.
+def arbitrate(bidder_list, service_registry):
+    # Decide which bidder gets assigned a job, using a simple random selector.
+    # This is only for the proof of concept; we will upgrade to smarter (and user-pluggable)
+    # arbitration methods once we shake the system out.
 
-    couriers = bid_data['couriers']
+    print('#####------- Arbitrating bid data:')
+    print(common.jsonpretty(bidder_list))
     random.seed(time.time())
-    index = random.randrange(0, len(couriers))
-
-    return [couriers[index]]
+    index = random.randrange(0, len(bidder_list))
+    return [bidder_list[index]]
 
 
 def handle_system_scan(jsondata, service_registry):
@@ -78,27 +75,52 @@ def handle_system_scan(jsondata, service_registry):
 
     print('###----- Retrieved open bid windows from API endpoint:')
     print(bid_windows)
-    
+
     # for each open window, see who has bid;
     for bwindow in bid_windows:
-        
+
+        job_tag = bwindow['job_tag']
+        window_id = bwindow['bidding_window_id']
+
         if bwindow['policy']['limit_type'] == 'num_bids':
-            print('++ Policy limit is set to %d bids.' % int(bwindow['policy']['limit']))
+            print('++ Policy limit is %d bids.' % int(bwindow['policy']['limit']))
+
+            json_bidder_data = api_service.get_active_job_bids(job_tag)
+            bidding_users = json_bidder_data.json()['data']['bidders']
+            num_bids = len(bidding_users)
+            policy_limit_bids = int(bwindow['policy']['limit'])
+
+            if num_bids >= policy_limit_bids:
+                winners = arbitrate(bidding_users, service_registry)
+                if len(winners):
+                    print('!!!!!!!!!!!  WE HAVE A WINNER !!!!!!!!!!!!!!!!!!')
+                    api_service.award_job(window_id, winners)
+                else:
+                    print('### No winner determined in the arbitration round ending %s.' % current_time.isoformat())
 
         elif bwindow['policy']['limit_type'] == 'time_seconds':
             # see how long the window has been open;
             window_opened_at = dateutil.parser.parse(bwindow['open_ts'])
-            window_open_duration = current_time - window_opened_at
-            print('++ Policy limit is set to %d seconds.' % int(bwindow['policy']['limit']))
-            print('++ Bidding window has been open for %d seconds.' % window_open_duration.seconds)
-            
+            window_open_duration = (current_time - window_opened_at).seconds
+            policy_limit_seconds = int(bwindow['policy']['limit'])
+
+            if window_open_duration >= policy_limit_seconds:
+                json_bidder_data = api_service.get_active_job_bids(job_tag)
+                bid_data = json_bidder_data.json()['data']['bidders']
+                winners = arbitrate(bid_data, service_registry)
+
+                if len(winners):
+                    print('!!!!!!!!!!!  WE HAVE A WINNER !!!!!!!!!!!!!!!!!!')
+                    api_service.award_job(window_id, winners)
+                else:
+                    print('### No winner determined in the arbitration round ending %s.' % current_time.isoformat())
+
         else:
             #raise hell; we don't support that
             raise Exception('Unrecognized bidding window policy limit_type: %s' % bwindow['policy']['limit_type'])
 
         # use the policy data embedded in the bidding window to decide whether
-        # to trigger (manual | automatic) arbitration 
-
+        # to trigger (manual | automatic) arbitration
 
 
 def handle_job_posted(job_post_data, service_registry):
@@ -111,10 +133,9 @@ def handle_job_posted(job_post_data, service_registry):
         "bid_window": {
             "id": <window_id>,
             "limit_type": "time_seconds" | "num_bids"
-            "limit": <limit> 
+            "limit": <limit>
         }
     }
-    
     '''
     job_tag = job_post_data['job_data']['job_tag']
 
@@ -131,18 +152,17 @@ def handle_job_posted(job_post_data, service_registry):
     for courier_record in couriers:
         sms_service.send_sms(courier_record['mobile_number'], job_tag)
 
-    ## done for now
+    # done for now
 
 
 S3_EVENT_DISPATCH_TABLE = {
     'posted': handle_job_posted,
     'scan': handle_system_scan
 }
-#'assigned': handle_job_assigned,
+
 
 def msg_handler(message, receipt_handle, service_registry):
 
-    #service_registry = common.ServiceObjectRegistry(service_tbl)
     s3_svc = service_registry.lookup('s3')
     print('### Inside SQS message handler function.')
     print("### message follows:")
@@ -151,7 +171,7 @@ def msg_handler(message, receipt_handle, service_registry):
     # unpack SQS message to get notification about S3 file upload
     message_body_raw = message['Body']
     message_body = json.loads(message_body_raw)
-    
+
     for record in message_body['Records']:
         s3_data = record.get('s3')
         if not record:
@@ -160,9 +180,9 @@ def msg_handler(message, receipt_handle, service_registry):
         bucket_name = s3_data['bucket']['name']
         object_key = s3_data['object']['key']
         # TODO: set a limit on file size?
-        
+
         print('#--- received object upload notification [ bucket: %s, key: %s ]' % (bucket_name, object_key))
-        
+
         s3key = S3Key(bucket_name, object_key)
         jsondata = None
         try:
@@ -185,15 +205,17 @@ def msg_handler(message, receipt_handle, service_registry):
             traceback.print_exc(file=sys.stdout)
             return
 
-        """
-        # to time a block of code:
 
-        time_log = jrnl.TimeLog()
-        timer_label = 'job_handler_exec_time: %s' % job_tag
+"""
 
-        with jrnl.stopwatch(timer_label, time_log):
-            <code block>
+# to time a block of code:
 
-        print(time_log.readout)
+time_log = jrnl.TimeLog()
+timer_label = 'job_handler_exec_time: %s' % job_tag
 
-        """
+with jrnl.stopwatch(timer_label, time_log):
+    <code block>
+
+print(time_log.readout)
+
+"""

@@ -69,7 +69,7 @@ SMS_GENERATOR_COMMAND_SPECS = {
 SMS_PREFIX_COMMAND_SPECS = {
     '$': SMSPrefixSpec(command='$', definition='create a user-defined macro', defchar=':'),
     '@': SMSPrefixSpec(command='@', definition="send a message to a user's log via his or her handle", defchar=' '),
-    '&': SMSPrefixSpec(command='&', definition='create a user handle for yourself', defchar=':')
+    '&': SMSPrefixSpec(command='&', definition='create a user handle for yourself', defchar=' ')
 }
 
 SMS_RESPONSES = {
@@ -178,6 +178,17 @@ class ObjectFactory(object):
         UserMacro = db_svc.Base.classes.user_macros
         return UserMacro(**kwargs)
 
+    @classmethod
+    def create_user_log(cls, session, db_svc, **kwargs):
+        UserLog = db_svc.Base.classes.messages
+        kwargs['created_ts'] = datetime.datetime.now()
+        return UserLog(**kwargs)
+
+    @classmethod
+    def create_user_handle(cls, session, db_svc, **kwargs):
+        UserHandle = db_svc.Base.classes.user_handle_maps
+        return UserHandle(**kwargs)
+
 
 def lookup_transport_method_ids(name_array, session, db_svc):
     TransportMethod = db_svc.Base.classes.transport_methods
@@ -279,13 +290,25 @@ def lookup_open_bidding_windows(session, db_svc):
         yield record
 
 
-def bidding_is_open_for_job(job_tag, session, db_svc):
-    current_time = datetime.datetime.now()
-    for window in lookup_bidding_windows_by_job_tag(job_tag, session, db_svc):
-        if window.open_ts <= current_time and window.close_ts > current_time:
-            return True
+def lookup_live_courier_handle(courier_id, session, db_svc):
+    UserHandle = db_svc.Base.classes.user_handle_maps
+    try:
+        return session.query(UserHandle).filter(and_(UserHandle.user_id == courier_id,
+                                                     UserHandle.expired_ts == None)).one()
+    except NoResultFound:
+        return None
 
-    return False
+
+def lookup_courier_by_handle(handle, session, db_svc):
+    HandleMap = db_svc.Base.classes.user_handle_maps
+    try:
+        handle_map = session.query(HandleMap).filter(and_(HandleMap.handle == handle,
+                                                          HandleMap.expired_ts == None)).one()
+
+        return lookup_courier_by_id(handle_map.user_id, session, db_svc)
+
+    except NoResultFound:
+        return None
 
 
 def job_is_available(job_tag, session, db_svc):
@@ -548,7 +571,7 @@ def parse_sms_message_body(raw_body):
             command_mode = 'simple'
             command_name = raw_body
             command_data = None
-        
+
         return CommandInput(cmd_type='prefix',
                             cmd_object=PrefixCommand(mode=command_mode,
                                                      name=command_name,
@@ -846,7 +869,6 @@ def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_r
     if len(tokens) == 1:
         # show all my awarded jobs
         return "<placeholder for listing ALL jobs awarded to (not yet accepted by) this courier>"
-
     else:
         # show a subset of my assigned jobs
         return "<placeholder for showing the Nth job awarded to (not yet accepted by) this courier>"
@@ -858,7 +880,6 @@ def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_
     tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
     if len(tokens) == 1:
         return "<placeholder for listing ALL jobs accepted by this courier>"
-
     else:
         return "<placeholder for showing the Nth job accepted by this courier>"
 
@@ -970,23 +991,79 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
 
 
 def pfx_command_sethandle(prefix_cmd, dlg_engine, dlg_context, service_registry):
-    return "placeholder for setting one's own user handle"
+    handle = prefix_cmd.name
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        try:
+            handle_entry = lookup_live_courier_handle(dlg_context.courier.id, session, db_svc)
+            if handle_entry:
+                if handle_entry.handle == handle:
+                    return 
+                else:
+                    handle_entry.expired_ts = datetime.datetime.now()
+                    session.add(handle_entry)
+                    session.flush()
 
+            # ignore the mode; the command name is the user handle
+            payload = {
+                'user_id': dlg_context.courier.id,
+                'handle': handle,
+                'is_public': True,
+                'created_ts': datetime.datetime.now()
+            }
+
+            new_handle_entry = ObjectFactory.create_user_handle(session, db_svc, **payload)
+            session.add(new_handle_entry)
+            session.flush()
+
+            return '\n'.join([
+                'Your user handle has been set to %s.' % new_handle_entry.handle,
+                'A system user can send a message to your log by texting:',
+                '@%s, space, and the message.' % handle
+            ])
+
+        except Exception as err:
+            print('exception of type %s thrown: %s' % (err.__class__.__name__, str(err)))
+            session.rollback()
+            return 'There was an error creating your user handle. Please contact your administrator.'
+            
 
 def pfx_command_sendlog(prefix_cmd, dlg_engine, dlg_context, service_registry):
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
-        if prefix_cmd.mode == 'simple':
-            return 'placeholder for sendlog prefix command in simple mode'
+        try:
+            if prefix_cmd.mode == 'simple':
+                return '\n'.join([
+                    "To send a message to a user's log,",
+                    'text @<user handle>, space, and the message.'
+                ])
 
-        elif prefix_cmd.mode == 'extended':
-            return '\n'.join([
-                'placeholder for sending the message:',
-                '______________\n',
-                prefix_cmd.body,
-                '______________\n',
-                'to user handle %s' % prefix_cmd.name
-            ])
+            elif prefix_cmd.mode == 'extended':
+                target_handle = prefix_cmd.name
+                message = prefix_cmd.body
+                to_courier = lookup_courier_by_handle(target_handle, session, db_svc)
+
+                if not to_courier:
+                    return 'Courier with handle %s not found.' % target_handle
+                
+                payload = {
+                    'from_user': dlg_context.courier.id,
+                    'to_user': to_courier.id,
+                    'msg_type': 1, 
+                    'mime_type': 'text/plain',
+                    'msg_data': message
+                }
+
+                log_record = ObjectFactory.create_user_log(session, db_svc, **payload)
+                session.add(log_record)
+                session.flush()
+
+                return 'Message sent.'
+
+        except Exception as err:
+            print('exception of type %s thrown: %s' % (err.__class__.__name__, str(err)))
+            session.rollback()
+            return 'There was an error sending your message. Please contact your administrator.'
 
 
 def pfx_command_macro(prefix_cmd, dlg_engine, dlg_context, service_registry):
@@ -1254,26 +1331,29 @@ def active_job_bids_func(input_data, service_objects, **kwargs):
     Courier = db_svc.Base.classes.couriers
 
     with db_svc.txn_scope() as session:
-        for c, jb in session.query(Courier, JobBid).filter(and_(Courier.id == JobBid.courier_id,
-                                                                JobBid.job_tag == job_tag,
-                                                                JobBid.accepted_ts == None,
-                                                                JobBid.expired_ts == None)).all(): 
+        try:
+            for c, jb in session.query(Courier, JobBid).filter(and_(Courier.id == JobBid.courier_id,
+                                                                    JobBid.job_tag == job_tag,
+                                                                    JobBid.accepted_ts == None,
+                                                                    JobBid.expired_ts == None)).all(): 
 
-            bid_list.append({
-                'bid_id': jb.id,
-                'job_tag': jb.job_tag,
-                'courier_id': c.id,
-                'first_name': c.first_name,
-                'last_name': c.last_name,
-                'mobile_number': c.mobile_number
-            })
-
-    return core.TransformStatus(ok_status('get active job bidders', couriers=courier_list))
-
+                bid_list.append({
+                    'bid_id': jb.id,
+                    'job_tag': jb.job_tag,
+                    'courier_id': c.id,
+                    'first_name': c.first_name,
+                    'last_name': c.last_name,
+                    'mobile_number': c.mobile_number
+                })
+            return core.TransformStatus(ok_status('get active job bidders', bidders=bid_list))
+        except Exception as err:
+            return core.TransformStatus(exception_status(err), False, message=str(err))
 
 
 def award_job_func(input_data, service_objects, **kwargs):
-    raise snap.TransformNotImplementedException('award_job_func')
+    print('Placeholder for awarding job to winning bids')
+    return core.TransformStatus(ok_status('award job to winning bidders',
+                                          winners=input_data['bids']))
 
 
 def rebroadcast_func(input_data, service_objects, **kwargs):
@@ -1296,6 +1376,7 @@ def bidding_status_func(input_data, service_objects, **kwargs):
     with db_svc.txn_scope() as session:
         for bwindow in lookup_open_bidding_windows(session, db_svc):
             windows.append({
+                'bidding_window_id': bwindow.id,
                 'job_id': bwindow.job_id,
                 'job_tag': bwindow.job_tag,
                 'policy': bwindow.policy,
@@ -1303,4 +1384,5 @@ def bidding_status_func(input_data, service_objects, **kwargs):
             })
 
     return core.TransformStatus(ok_status('bidstat', bidding_windows=windows))
+
 
