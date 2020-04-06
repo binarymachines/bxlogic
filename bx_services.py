@@ -95,7 +95,6 @@ class SMSService(object):
 
         self.client = Client(account_sid, auth_token)
 
-
     def send_sms(self, mobile_number, message):
         print('### sending message body via SMS from [%s] to [%s] :' % (self.source_number, mobile_number))
         print(message)
@@ -126,7 +125,7 @@ class PostgreSQLService(object):
         self.session_factory = None
         self.Base = None
         self.url = None
-                
+
         url_template = '{db_type}://{user}:{passwd}@{host}/{database}'
         db_url = url_template.format(db_type='postgresql+psycopg2',
                                      user=self.username,
@@ -134,7 +133,7 @@ class PostgreSQLService(object):
                                      host=self.host,
                                      port=self.port,
                                      database=self.db_name)
-        
+
         retries = 0
         connected = False
         while not connected and retries < self.max_connect_retries:
@@ -159,7 +158,7 @@ class PostgreSQLService(object):
                 print(err.__dict__, file=sys.stderr)
                 time.sleep(1)
                 retries += 1
-            
+
         if not connected:
             raise Exception('!!! Unable to connect to PostgreSQL db on host %s at port %s.' % 
                             (self.host, self.port))
@@ -170,14 +169,13 @@ class PostgreSQLService(object):
         try:
             yield session
             session.commit()
-        except:
+        except Exception:
             session.rollback()
             raise
         finally:
             session.close()
 
-
-    @contextmanager    
+    @contextmanager
     def connect(self):
         connection = self.engine.connect()
         try:

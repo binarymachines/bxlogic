@@ -358,7 +358,7 @@ transforms:
     route:              /bidstat
     method:             GET
     input_shape:        default
-    output_mimetype:   application/json
+    output_mimetype:    application/json
 
 
 decoders:

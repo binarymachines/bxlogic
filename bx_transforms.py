@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
+import sys
 import re
 import uuid
 import json
+import traceback
 import datetime
 from urllib.parse import unquote_plus
 from collections import namedtuple
@@ -307,6 +309,24 @@ def lookup_courier_by_handle(handle, session, db_svc):
 
         return lookup_courier_by_id(handle_map.user_id, session, db_svc)
 
+    except NoResultFound:
+        return None
+
+
+def lookup_current_job_status(job_tag, session, db_svc):
+    JobStatus = db_svc.Base.classes.job_status
+    try:
+        return session.query(JobStatus).filter(and_(JobStatus.job_tag == job_tag,
+                                                    JobStatus.expired_ts == None)).one()
+    except NoResultFound:
+        return None
+
+
+def lookup_bid_by_id(bid_id, session, db_svc):
+    JobBid = db_svc.Base.classes.job_bids
+    try:
+        return session.query(JobBid).filter(and_(JobBid.id == bid_id,
+                                                 JobBid.expired_ts == None)).one()
     except NoResultFound:
         return None
 
@@ -1351,9 +1371,77 @@ def active_job_bids_func(input_data, service_objects, **kwargs):
 
 
 def award_job_func(input_data, service_objects, **kwargs):
-    print('Placeholder for awarding job to winning bids')
-    return core.TransformStatus(ok_status('award job to winning bidders',
-                                          winners=input_data['bids']))
+    print('###-------- awarding job to winning bids')
+
+    award_message_lines = [
+        "Hello {name}, you've been awarded the job with tag:",
+        "{job_tag}.",
+        "To accept this job, text the job tag, space, and {accept_command}."
+    ]
+
+    award_message_template = ' '.join(award_message_lines)
+
+    window_id = input_data['window_id']
+    current_time = datetime.datetime.now()
+    notify_targets = {}
+
+    sms_svc = service_objects.lookup('sms')
+    db_svc = service_objects.lookup('postgres')
+
+    with db_svc.txn_scope() as session:
+        try:
+            print('### closing the bidding window %s...' % window_id)
+            # close the bidding window
+            window = lookup_bidding_window_by_id(window_id, session, db_svc)
+            window.close_ts = current_time
+            session.add(window)
+
+            # record the winning bids as having been accepted
+            for bid_record in input_data['bids']:
+                print('### updating bid %s to accepted...' % bid_record['bid_id'])
+                bid = lookup_bid_by_id(bid_record['bid_id'], session, db_svc)
+                bid.accepted_ts = current_time
+                session.add(bid)
+
+                notify_targets[bid_record['mobile_number']] = {
+                    'name': bid_record['first_name'],
+                    'job_tag': bid_record['job_tag'],
+                    'accept_command': 'acc'
+                }
+
+                # update the status of the job to "awarded"
+                
+                job_status = lookup_current_job_status(bid_record['job_tag'], session, db_svc)
+                if job_status.status == 0:  # 0 is "broadcast"
+                    print('### updating the status for job tag %s...' % bid_record['job_tag'])
+
+                    # expire the existing status
+                    job_status.expired_ts = current_time
+                    session.add(job_status)
+
+                    # add a new status record
+                    # status 1 is "awarded"
+                    new_job_status = ObjectFactory.create_job_status(db_svc,
+                                                                     job_tag=bid_record['job_tag'],
+                                                                     status=1,
+                                                                     write_ts=current_time)
+                    session.add(new_job_status)
+
+            session.flush()
+
+            print('### Sending SMS notification to bid winner(s)...')
+            for mobile_number, data in notify_targets.items():
+                sms_svc.send_sms(mobile_number, award_message_template.format(**data)) 
+
+            return core.TransformStatus(ok_status('award job to winning bidders',
+                                                winners=input_data['bids']))
+        except Exception as err:
+            session.rollback()
+            print(err)
+            traceback.print_exc(file=sys.stdout)
+            return core.TransformStatus(exception_status(err),
+                                        False, 
+                                        message='error of type %s closing bid window %s' % (err.__class__.__name__, window_id))
 
 
 def rebroadcast_func(input_data, service_objects, **kwargs):
