@@ -6,6 +6,12 @@ run:
 qlisten:
 	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic --verbose
 
+qscan:
+	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic-scan --verbose
+
+qsend_test:
+	./sqssend.py --url https://sqs.us-east-1.amazonaws.com/543680801712/bxlogic_events --body 'foo' --attrs=foo:bar%String
+
 regen:
 	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` routegen -e config/bx_web.yaml > bxlistener.py
 

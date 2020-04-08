@@ -42,8 +42,6 @@ def parse_attributes(attr_string):
 
 
 def main(args):
-    print(args)
-    
     queue_url = args['<queue_url>']
 
     sendargs = {
@@ -54,7 +52,9 @@ def main(args):
     }
 
     print(common.jsonpretty(sendargs))
-
+    client = boto3.client('sqs')
+    response = client.send_message(**sendargs)
+    print(response)
 
 
 

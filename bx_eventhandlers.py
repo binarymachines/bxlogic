@@ -94,6 +94,7 @@ def handle_system_scan(jsondata, service_registry):
                 winners = arbitrate(bidding_users, service_registry)
                 if len(winners):
                     print('!!!!!!!!!!!  WE HAVE A WINNER !!!!!!!!!!!!!!!!!!')
+                    print(common.jsonpretty(winners))
                     api_service.award_job(window_id, winners)
                 else:
                     print('### No winner determined in the arbitration round ending %s.' % current_time.isoformat())
@@ -107,16 +108,18 @@ def handle_system_scan(jsondata, service_registry):
             if window_open_duration >= policy_limit_seconds:
                 json_bidder_data = api_service.get_active_job_bids(job_tag)
                 bid_data = json_bidder_data.json()['data']['bidders']
-                winners = arbitrate(bid_data, service_registry)
-
-                if len(winners):
-                    print('!!!!!!!!!!!  WE HAVE A WINNER !!!!!!!!!!!!!!!!!!')
-                    api_service.award_job(window_id, winners)
+                if len(bid_data):
+                    winners = arbitrate(bid_data, service_registry)
+                    if len(winners):
+                        print('!!!!!!!!!!!  WE HAVE A WINNER !!!!!!!!!!!!!!!!!!')
+                        api_service.award_job(window_id, winners)
+                    else:
+                        print('### No winner determined in the arbitration round ending %s.' % current_time.isoformat())
                 else:
-                    print('### No winner determined in the arbitration round ending %s.' % current_time.isoformat())
+                    print('### No more bidders in this round.')
 
         else:
-            #raise hell; we don't support that
+            # raise hell; we don't support that
             raise Exception('Unrecognized bidding window policy limit_type: %s' % bwindow['policy']['limit_type'])
 
         # use the policy data embedded in the bidding window to decide whether
@@ -159,6 +162,12 @@ S3_EVENT_DISPATCH_TABLE = {
     'posted': handle_job_posted,
     'scan': handle_system_scan
 }
+
+
+def scan_handler(message, receipt_handle, service_registry):
+    print('### Inside top-level SCAN event handler function.')
+    print("### message follows:")
+    print(message)
 
 
 def msg_handler(message, receipt_handle, service_registry):

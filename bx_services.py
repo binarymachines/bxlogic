@@ -61,8 +61,9 @@ class JobPipelineService(object):
         self.bid_window_limit_type = kwargs['bid_window_limit_type']
 
         if self.bid_window_limit_type not in ALLOWED_BIDDING_LIMIT_TYPES:
-            raise Exception('Invalid bidding limit type %s. Allowed types are %s.' % 
-                            (self.bid_window_limit_type, ALLOWED_BIDDING_LIMIT_TYPES))
+            raise Exception('Invalid bidding limit type %s. Allowed types are %s.' %
+                            (self.bid_window_limit_type,
+                             ALLOWED_BIDDING_LIMIT_TYPES))
 
         self.bid_window_limit = int(kwargs['bid_window_limit'])
 
@@ -221,18 +222,20 @@ class S3Service(object):
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
 
-        # we set this to True if we are initializing this object from inside an AWS Lambda,
-        # because in that case we do not require the aws credential parameters to be set.
-        # The default is False, which is what we want when we are creating this object
-        # in a normal (non-AWS-Lambda) execution context: clients must pass in credentials.
+        # we set this to True if we are initializing this object from inside
+        # an AWS Lambda, because in that case we do not require the aws
+        # credential parameters to be set. The default is False, which is what
+        # we want when we are creating this object in a normal (non-AWS-Lambda)
+        # execution context: clients must pass in credentials.
+
         should_authenticate_via_iam = kwargs.get('auth_via_iam', False)
 
         if not should_authenticate_via_iam:
-            print("NOT authenticating via IAM. Setting credentials now.", file=sys.stderr)            
+            print("NOT authenticating via IAM. Setting credentials now.", file=sys.stderr)
             self.aws_access_key_id = kwargs.get('aws_key_id')
             self.aws_secret_access_key = kwargs.get('aws_secret_key')
             if not self.aws_secret_access_key or not self.aws_access_key_id:
-                raise Exception('S3 authorization failed. Please check your credentials.')     
+                raise Exception('S3 authorization failed. Please check your credentials.')
 
             self.s3client = boto3.client('s3',
                                          aws_access_key_id=self.aws_access_key_id,
@@ -259,7 +262,9 @@ class S3Service(object):
 
     def upload_bytes(self, bytes_obj, bucket_name, bucket_path):
         s3_key = bucket_path
-        self.s3client.put_object(Body=bytes_obj, Bucket=bucket_name, Key=s3_key)
+        self.s3client.put_object(Body=bytes_obj,
+                                 Bucket=bucket_name,
+                                 Key=s3_key)
         return s3_key
 
     def download_json(self, bucket_name, s3_key_string):
@@ -310,13 +315,17 @@ class BXLogicAPIService(object):
             return requests.get(url_path, params=payload)
         if endpoint.method == 'POST':
             print('calling endpoint %s using POST with payload %s...' % (url_path, payload))
-            return requests.post(url_path, data=payload)
+            return requests.post(url_path, json=payload)
 
     def award_job(self, bid_window_id, bidder_array, **kwargs):
         payload = {
             'window_id': bid_window_id,
             'bids': bidder_array
         }
+
+        print('PAYLOAD for calling /award endpoint:')
+        print(common.jsonpretty(payload))
+
         response = self._call_endpoint(self.award, payload, **kwargs)
         return response
 
@@ -332,7 +341,7 @@ class BXLogicAPIService(object):
         return response
 
     def get_available_couriers(self, **kwargs):
-        payload = { 'status': 1 }
+        payload = {'status': 1}
         response = self._call_endpoint(self.couriers,
                                        payload, 
                                        **kwargs)
@@ -361,9 +370,9 @@ class BXLogicAPIService(object):
     def send_log_msg(self, job_tag, raw_message):
         print('### sending message to joblog for tag %s' % job_tag)
         message = urllib.parse.quote(raw_message)
-        response = self._call_endpoint(self.update_job_log,
-                                       {'job_tag': job_tag,
-                                        'log_message': message})
+        self._call_endpoint(self.update_job_log,
+                            {'job_tag': job_tag,
+                             'log_message': message})
 
-        # fire and forget -- don't bother raising an exception if this doesn't succeed   
-
+        # fire and forget -- don't bother raising an exception
+        # if this doesn't succeed

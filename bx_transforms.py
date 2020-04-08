@@ -48,7 +48,9 @@ NEG_INTEGER_RX = re.compile(r'^-[0-9]+$')
 RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
 
 SMS_SYSTEM_COMMAND_SPECS = {
-    'bid': SMSCommandSpec(command='bid',definition='Bid for a delivery job', synonyms=[], tag_required=True),
+    'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[], tag_required=False),
+    'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[], tag_required=False),
+    'bid': SMSCommandSpec(command='bid', definition='Bid for a delivery job', synonyms=[], tag_required=True),
     'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
     'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
@@ -56,16 +58,13 @@ SMS_SYSTEM_COMMAND_SPECS = {
     'can': SMSCommandSpec(command='can', definition='Cancel (courier can no longer complete an accepted job)', synonyms=[], tag_required=True),
     'fin': SMSCommandSpec(command='fin', definition='Finished a delivery', synonyms=['f'], tag_required=True),
     '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[], tag_required=False),
-    'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?'], tag_required=False),
-    'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[], tag_required=False),
-    'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[], tag_required=False)
-
+    'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?'], tag_required=False)
 }
 
 SMS_GENERATOR_COMMAND_SPECS = {
     'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.'),
     'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.'),
-    'awd': SMSGeneratorSpec(command='asg', definition='List my awarded (but not yet accepted) jobs', specifier='.')
+    'awd': SMSGeneratorSpec(command='awd', definition='List my awarded (but not yet accepted) jobs', specifier='.')
 }
 
 SMS_PREFIX_COMMAND_SPECS = {
@@ -91,6 +90,9 @@ REPLY_INVALID_TAG_TPL = 'The job tag you have specified (%s) appears to be inval
 JOB_STATUS_BROADCAST = 0
 JOB_STATUS_AWARDED = 1
 JOB_STATUS_ACCEPTED = 3
+JOB_STATUS_IN_PROGRESS = 4
+JOB_STATUS_COMPLETED = 5
+
 
 def generate_assign_job_reply(**kwargs):
     return REPLY_ASSIGN_JOB_TPL.format(**kwargs)
@@ -180,20 +182,26 @@ class ObjectFactory(object):
         return BiddingWindow(**kwargs)
 
     @classmethod
-    def create_macro(cls, session, db_svc, **kwargs):
+    def create_macro(cls, db_svc, **kwargs):
         UserMacro = db_svc.Base.classes.user_macros
         return UserMacro(**kwargs)
 
     @classmethod
-    def create_user_log(cls, session, db_svc, **kwargs):
+    def create_user_log(cls, db_svc, **kwargs):
         UserLog = db_svc.Base.classes.messages
         kwargs['created_ts'] = datetime.datetime.now()
         return UserLog(**kwargs)
 
     @classmethod
-    def create_user_handle(cls, session, db_svc, **kwargs):
+    def create_user_handle(cls, db_svc, **kwargs):
         UserHandle = db_svc.Base.classes.user_handle_maps
         return UserHandle(**kwargs)
+
+
+    @classmethod
+    def create_job_assignment(cls, db_svc, **kwargs):
+        JobAssignment = db_svc.Base.classes.job_assignments
+        return JobAssignment(**kwargs)
 
 
 def lookup_transport_method_ids(name_array, session, db_svc):
@@ -326,6 +334,16 @@ def lookup_current_job_status(job_tag, session, db_svc):
         return None
 
 
+def lookup_user_job_bid(job_tag, courier_id, session, db_svc):
+    JobBid = db_svc.Base.classes.job_bids
+    try:
+        return session.query(JobBid).filter(and_(JobBid.job_tag == job_tag,
+                                                 JobBid.courier_id == courier_id,
+                                                 JobBid.expired_ts == None)).one()
+    except NoResultFound:
+        return None
+
+
 def lookup_bid_by_id(bid_id, session, db_svc):
     JobBid = db_svc.Base.classes.job_bids
     try:
@@ -359,13 +377,23 @@ def job_is_awarded(job_tag, session, db_svc):
         return False
 
 
+def job_belongs_to_courier(job_tag, courier_id, session, db_svc):
+    JobAssignment = db_svc.Base.classes.job_assignments
+    try:
+        session.query(JobAssignment).filter(and_(JobAssignment.job_tag == job_tag,
+                                                 JobAssignment.courier_id == courier_id)).one()
+        return True
+    except NoResultFound:
+        return False
+
+
 def list_awarded_jobs(courier_id, session, db_svc):
     jobs = []
     JobBid = db_svc.Base.classes.job_bids
 
     for bid in session.query(JobBid).filter(and_(JobBid.courier_id == courier_id,
-                                                            JobBid.expired_ts == None,
-                                                            JobBid.accepted_ts != None)).all():
+                                                 JobBid.expired_ts == None,
+                                                 JobBid.accepted_ts != None)).all():
 
         if job_is_awarded(bid.job_tag, session, db_svc):
             job = lookup_job_data_by_tag(bid.job_tag, session, db_svc)
@@ -382,6 +410,21 @@ def list_awarded_jobs(courier_id, session, db_svc):
                                                             JobStatus.job_tag == job_tag, 
                                                             JobStatus.status == 1)).one()
     '''
+
+
+def list_accepted_jobs(courier_id, session, db_svc):
+    JobAssignment = db_svc.Base.classes.job_assignments
+    JobStatus = db_svc.Base.classes.job_status
+    # resultset = session.query(JobAssignment).filter(JobAssignment.courier_id == dlg_context.courier.id).all()
+    jobs = []
+    for ja, stat in session.query(JobAssignment,
+                                  JobStatus).filter(and_(JobStatus.job_tag == JobAssignment.job_tag,
+                                                         JobStatus.status == JOB_STATUS_ACCEPTED,
+                                                         JobStatus.expired_ts == None,
+                                                         JobAssignment.courier_id == courier_id)).all():
+        jobs.append(stat)
+
+    return jobs
 
 
 def list_available_jobs(session, db_svc):
@@ -721,9 +764,27 @@ def courier_has_bid(courier_id, job_tag, session, db_svc):
 
 def compile_help_string():
     lines = []
-    for key, cmd_spec in SMS_SYSTEM_COMMAND_SPECS.items():
-        lines.append('%s: %s' % (key, cmd_spec.definition))
+
+    lines.append('________')
+
+    lines.append('[ LIST commands ]:')
+    for key, cmd_spec in SMS_GENERATOR_COMMAND_SPECS.items():
+        lines.append('%s : %s' % (key, cmd_spec.definition))
     
+    lines.append('________')
+
+    lines.append('[ GENERAL commands ]:')
+    for key, cmd_spec in SMS_SYSTEM_COMMAND_SPECS.items():
+        lines.append('%s : %s' % (key, cmd_spec.definition))
+    
+    lines.append('________')
+
+    lines.append('[ PREFIX commands ]:')
+    for key, cmd_spec in SMS_PREFIX_COMMAND_SPECS.items():
+        lines.append('%s : %s' % (key, cmd_spec.definition))
+
+    lines.append('________')
+
     return '\n\n'.join(lines)
 
 
@@ -828,10 +889,63 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
     
 def handle_accept_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: verify (non-stale) assignment, update status table
-    if not cmd_object.job_tag:
+    current_time = datetime.datetime.now()
+    job_tag = cmd_object.job_tag
+    if not job_tag:
         return 'To accept a job assignment, text the job tag, a space, and "acc".'
 
-    return "<Placeholder for accepting a job that has been awarded to the courier>"
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        try:
+            # first, does this user even own this job?
+            job_bid = lookup_user_job_bid(job_tag, dlg_context.courier.id, session, db_svc)
+
+            if not job_bid:
+                return 'Sorry, it appears the job with tag %s is either expired or not yours to accept.' % job_tag
+
+            if lookup_open_bidding_window_by_job_tag(job_tag, session, db_svc):
+                return 'Sorry -- the bidding window for this job is still open.'
+
+            jobstat = lookup_current_job_status(job_tag, session, db_svc)
+            if jobstat.status == JOB_STATUS_ACCEPTED:
+                return 'You have already accepted this job.'
+
+            else:
+                # expire this job status and create a new one
+                jobstat.expired_ts = current_time
+                session.add(jobstat)
+
+                new_status = ObjectFactory.create_job_status(db_svc,
+                                                             job_tag=job_tag,
+                                                             status=JOB_STATUS_ACCEPTED,
+                                                             write_ts=current_time)
+                session.add(new_status)
+
+                jobdata = lookup_job_data_by_tag(job_tag, session, db_svc)
+                if not jobdata:
+                    raise Exception('No job data entry found for job tag %s.' % job_tag)
+
+                new_assignment = ObjectFactory.create_job_assignment(db_svc,
+                                                                     courier_id=dlg_context.courier.id,
+                                                                     job_id=jobdata.id,
+                                                                     job_tag=job_tag)
+                session.add(new_assignment)
+                session.flush()         
+
+                return ' '.join([
+                    'You have accepted job %s.' % job_tag,
+                    'This job will show up in your personal job queue,',
+                    'which you can review by texting "my".',
+                    'You can get the details of this job by texting',
+                    'The job tag, space, and "dt".',
+                    'Godspeed!' 
+                ])
+
+        except Exception as err:
+            print(err)
+            traceback.print_exc(file=sys.stdout)
+            session.rollback()
+            return 'There was an error while attempting to accept this job. Please contact your administrator.'
 
 
 def handle_help(cmd_object, dlg_context, service_registry, **kwargs):
@@ -863,19 +977,60 @@ def handle_job_details(cmd_object, dlg_context, service_registry, **kwargs):
 
 
 def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO: update status table
-    # TODO: handle missing job tag if courier has more than one job
+    current_time = datetime.datetime.now()
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        try:
+            jobs = list_accepted_jobs(dlg_context.courier.id, session, db_svc)
 
-    if not cmd_object.job_tag:
-        return "To notify the network that you're en route, please text the tag of the job you're starting, space, then 'er'."
+            if not len(jobs):
+                return 'There are no jobs in your queue.'
+
+            if not cmd_object.job_tag:
+                if len(jobs) == 1:
+                    # if thereis only one job in the queue, that's the one
+                    job_tag = jobs[0].job_tag
+                else:
+                    return ' '.join([
+                        "To notify the network that you're en route,",
+                        "please text the tag of the job you're starting,",
+                        'space, then "er".'
+                    ])
+            else:
+                job_tag = cmd_object.job_tag
+
+            if not job_belongs_to_courier(job_tag, dlg_context.courier.id, session, db_svc):
+                return 'Job with tag %s does not appear to be one of yours.' % job_tag
+
+            print('###  performing en-route status update for job %s...' % job_tag)
+            current_job_status = lookup_current_job_status(job_tag,
+                                                           session,
+                                                           db_svc)
+
+            if current_job_status.status == JOB_STATUS_IN_PROGRESS:
+                return 'You have already reported en-route status for this job.'
+            else:
+                current_job_status.expired_ts = current_time
+                session.add(current_job_status)
+                new_job_status = ObjectFactory.create_job_status(db_svc,
+                                                                    job_tag=job_tag,
+                                                                    status=JOB_STATUS_IN_PROGRESS,
+                                                                    write_ts=current_time)
+                session.add(new_job_status)
+                session.flush()
+
+                return ' '.join([
+                    "You have reported that you're en route for job:",
+                    '%s. Godspeed!' % job_tag
+                ])
         
-    lines = [
-        "You have reported that you're en route for job:",
-        cmd_object.job_tag
-    ]
+        except Exception as err:
+            session.rollback()
+            print(err)
+            traceback.print_exc(file=sys.stdout)
+            return 'There was an error updating the status of this job. Please contact your administrator.'
 
-    return '\n'.join(lines)
-
+    
 
 def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: handle missing job tag
@@ -888,12 +1043,58 @@ def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
     
 
 def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO: handle missing job tag
-    # TODO: update status table
-    if not cmd_object.job_tag:
-        return 'To notify the system that you have completed a job, text the job tag, space, and "fin".'
-    
-    return "Recording job completion for job tag %s. Thank you!" % cmd_object.job_tag
+    current_time = datetime.datetime.now()
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        try:
+            job_tag = None
+            jobs = list_accepted_jobs(dlg_context.courier.id, session, db_svc)
+            if not len(jobs):
+                return 'There are no jobs in your queue.'
+            
+            if not cmd_object.job_tag:
+                if len(jobs) == 1:
+                    # only one job in your queue; this must be it
+                    job_tag = jobs[0].job_tag
+
+                elif lend(jobs) > 1:
+                    return ' '.join([
+                        'To notify the system that you have completed a job,',
+                        'text the job tag, space, and "%s".' % cmd_object.cmdspec.command
+                    ])
+            else:
+                job_tag = cmd_object.job_tag
+
+            if not job_belongs_to_courier(job_tag, dlg_context.courier.id, session, db_svc):
+                return 'Job with tag %s does not appear to be one of yours.' % job_tag
+
+            print('###  performing ->complete status update for job %s...' % job_tag)
+            current_job_status = lookup_current_job_status(job_tag,
+                                                           session,
+                                                           db_svc)
+
+            if current_job_status.status == JOB_STATUS_COMPLETED:
+                return 'You have already reported that this job is complete. Thanks again!'
+            else:
+                current_job_status.expired_ts = current_time
+                session.add(current_job_status)
+                new_job_status = ObjectFactory.create_job_status(db_svc,
+                                                                 job_tag=job_tag,
+                                                                 status=JOB_STATUS_COMPLETED,
+                                                                 write_ts=current_time)
+                session.add(new_job_status)
+                session.flush()
+
+                return ' '.join([
+                    'Recording job completion for job tag:',
+                    '%s. Thank you!' % job_tag
+                ])
+
+        except Exception as err:
+            session.rollback()
+            print(err)
+            traceback.print_exc(file=sys.stdout)
+            return 'There was an error updating the status of this job. Please contact your administrator.'
 
 
 def handle_emergency(cmd_object, dlg_context, service_registry, **kwargs):
@@ -1040,13 +1241,121 @@ def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_r
 
 
 def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
-    print('Specifier character is "%s"' % cmd_object.cmdspec.specifier)
+    jobs = []
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        
+        JobAssignment = db_svc.Base.classes.job_assignments
+        JobStatus = db_svc.Base.classes.job_status
+        # resultset = session.query(JobAssignment).filter(JobAssignment.courier_id == dlg_context.courier.id).all()
 
-    tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
-    if len(tokens) == 1:
-        return "<placeholder for listing ALL jobs accepted by this courier>"
-    else:
-        return "<placeholder for showing the Nth job accepted by this courier>"
+        for ja, stat in session.query(JobAssignment,
+                                      JobStatus).filter(and_(JobStatus.job_tag == JobAssignment.job_tag,
+                                                             JobStatus.status == JOB_STATUS_ACCEPTED,
+                                                             JobStatus.expired_ts == None,
+                                                             JobAssignment.courier_id == dlg_context.courier.id)).all():
+            jobs.append(stat)
+
+        if not len(jobs):
+            return 'You have no current accepted jobs in your queue.'
+
+        tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+        if len(tokens) == 1:
+            lines = []
+            index = 1
+            # if no specifier is present in the command string, return the entire list (with indices)
+            #TODO: segment output for very long lists
+            for job in jobs:
+                lines.append("# %d: %s" % (index, job.job_tag))
+                index += 1
+            
+            return '\n\n'.join(lines)
+            
+        else:
+            ext = tokens[1] 
+            # the "extension" is the part of the command string immediately following the specifier character
+            # (we have defaulted to a period, but that's settable).
+            #
+            # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
+            if extension_is_positive_num(ext):
+                list_index=int(ext)
+
+                if list_index > len(jobs):
+                    return "You requested open job # %d, but there are only %d jobs open." % (list_index, len(jobs))
+                if list_index == 0:
+                    return "You may not request the 0th element of a list. (Nice try, C programmers.)"
+
+                list_element = jobs[list_index-1].job_tag
+                
+                # if the user is extracting a single list element (by using an integer extension), we do 
+                # one of two things. If there were no command modifiers specified, we simply return the element:
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_negative_num(ext):
+                neg_index = int(ext)
+
+                if neg_index == 0:
+                    return '-0 is not a valid negative index. Use -1 to specify the last job in the list.' 
+
+                zero_list_index = len(jobs) + neg_index
+
+                if zero_list_index < 0:
+                    return 'You specified a negative list offset (%d), but there are only %d open jobs.' % (neg_index, len(jobs))
+                list_element = jobs[zero_list_index].job_tag
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_range(ext):
+                # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
+                tokens = ext.split('-')
+                if len(tokens) != 2:
+                    return 'The range extension for this command must be formatted as A-B where A and B are integers.'
+
+                min_index = int(tokens[0])
+                max_index = int(tokens[1])
+                
+                if min_index > max_index:
+                    return 'The first number in your range specification A-B must be less than or equal to the second number.'
+
+                if max_index > len(jobs):
+                    return "There are only %d jobs open." % len(jobs)
+
+                if min_index == 0:
+                    return "You may not request the 0th element of a list. (This stack was written in Python, but the UI is in English.)"
+
+                lines = []
+                for index in range(min_index, max_index+1):
+                    lines.append('# %d: %s' % (index, jobs[index-1].job_tag))
+                
+                return '\n\n'.join(lines)
+            
 
 
 def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
@@ -1177,7 +1486,7 @@ def pfx_command_sethandle(prefix_cmd, dlg_engine, dlg_context, service_registry)
                 'created_ts': datetime.datetime.now()
             }
 
-            new_handle_entry = ObjectFactory.create_user_handle(session, db_svc, **payload)
+            new_handle_entry = ObjectFactory.create_user_handle(db_svc, **payload)
             session.add(new_handle_entry)
             session.flush()
 
@@ -1219,7 +1528,7 @@ def pfx_command_sendlog(prefix_cmd, dlg_engine, dlg_context, service_registry):
                     'msg_data': message
                 }
 
-                log_record = ObjectFactory.create_user_log(session, db_svc, **payload)
+                log_record = ObjectFactory.create_user_log(db_svc, **payload)
                 session.add(log_record)
                 session.flush()
 
@@ -1248,7 +1557,7 @@ def pfx_command_macro(prefix_cmd, dlg_engine, dlg_context, service_registry):
                 'command_string': prefix_cmd.body
             }
 
-            macro = ObjectFactory.create_macro(session, db_svc, **payload)
+            macro = ObjectFactory.create_macro(db_svc, **payload)
             session.add(macro)
             session.flush()
 
@@ -1516,7 +1825,14 @@ def active_job_bids_func(input_data, service_objects, **kwargs):
 
 
 def award_job_func(input_data, service_objects, **kwargs):
+    '''
+    print(common.jsonpretty(input_data))
+    return core.TransformStatus(ok_status('debugging', data=input_data))
+    '''
     print('###-------- awarding job to winning bids')
+    print('----------------INPUT DATA\n\n')
+    print(input_data)
+    print('\n\n----------------INPUT DATA ENDS')
 
     award_message_lines = [
         "Hello {name}, you've been awarded the job with tag:",
@@ -1538,11 +1854,16 @@ def award_job_func(input_data, service_objects, **kwargs):
             print('### closing the bidding window %s...' % window_id)
             # close the bidding window
             window = lookup_bidding_window_by_id(window_id, session, db_svc)
+            if not window:
+                raise Exception('Bidding window with ID %s not found.' % window_id)
+
             window.close_ts = current_time
             session.add(window)
 
             # record the winning bids as having been accepted
+            
             for bid_record in input_data['bids']:
+                
                 print('### updating bid to accepted...')
                 bid = lookup_bid_by_id(bid_record['bid_id'], session, db_svc)
                 bid.accepted_ts = current_time
@@ -1617,5 +1938,8 @@ def bidding_status_func(input_data, service_objects, **kwargs):
             })
 
     return core.TransformStatus(ok_status('bidstat', bidding_windows=windows))
+
+
+
 
 

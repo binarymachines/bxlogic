@@ -6,7 +6,7 @@ Usage:
     sqs-consume --version
 '''
 
-import os, sys
+import sys
 import time
 import datetime
 from multiprocessing import Process
@@ -16,6 +16,7 @@ from snap import snap, common
 from sh import git
 
 VERSION_NUM = '0.5.2'
+
 
 def show_version():
     git_hash = git.describe('--always').lstrip().rstrip()
@@ -28,7 +29,7 @@ def main(args):
         return
 
     verbose_mode = False
-    if  args['--verbose']:
+    if args['--verbose']:
         verbose_mode = True
 
     configfile = args['<configfile>']
@@ -45,18 +46,18 @@ def main(args):
     # Create SQS client
     region = source_config['region']
     polling_interval = int(source_config['polling_interval_seconds'])
-    
+
     sqs = boto3.client('sqs', region_name=region)
     queue_url = common.load_config_var(source_config['queue_url'])
     msg_handler_name = source_config['handler']
     project_dir = common.load_config_var(yaml_config['globals']['project_home'])
     sys.path.append(project_dir)
-    
+
     msg_handler_module = yaml_config['globals']['consumer_module']
     msg_handler_func = common.load_class(msg_handler_name, msg_handler_module)
 
     child_procs = []
-    
+
     print('### initiating polling loop.')
 
     # loop forever
@@ -84,7 +85,7 @@ def main(args):
             # If a message is available, the call returns sooner than WaitTimeSeconds . If no messages are available
             # and the wait time expires, the call returns successfully with an empty list of messages.
         )
-        
+
         inbound_msgs = response.get('Messages') or []
         if not len(inbound_msgs):
             if verbose_mode:
@@ -97,7 +98,7 @@ def main(args):
             receipt_handle = message['ReceiptHandle']
             current_time = datetime.datetime.now().isoformat()
             print('### spawning message processor at %s...' % current_time, file=sys.stderr)
-            
+
             try:
                 # TODO: can we pickle a ServiceObjectRegistry?
                 p = Process(target=msg_handler_func, args=(message, receipt_handle, service_registry))
@@ -106,13 +107,11 @@ def main(args):
                 print('### Queued message-handling subprocess with PID %s.' % p.pid, file=sys.stderr)
 
                 # Delete received message from queue
-                
                 sqs.delete_message(
                     QueueUrl=queue_url,
                     ReceiptHandle=receipt_handle
                 )
-                
-                #print('### Received and deleted message with receipt: %s' % receipt_handle, file=sys.stderr)
+
             except Exception as err:
                 print('!!! Error processing message with receipt: %s' % receipt_handle, file=sys.stderr)
                 print(err)
