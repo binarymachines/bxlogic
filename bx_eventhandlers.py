@@ -64,7 +64,7 @@ def arbitrate(bidder_list, service_registry):
     return [bidder_list[index]]
 
 
-def handle_system_scan(jsondata, service_registry):
+def trigger_arbitration(service_registry, **kwargs):
 
     current_time = datetime.datetime.now()
     # scan ALL open bidding windows
@@ -126,7 +126,7 @@ def handle_system_scan(jsondata, service_registry):
         # to trigger (manual | automatic) arbitration
 
 
-def handle_job_posted(job_post_data, service_registry):
+def handle_job_posted(service_registry, **kwargs):
     '''when a job is posted, broadcast the notice via SMS to all available couriers,
     who may then "bid" to accept the job. The current JSON format for a job posting is:
     {
@@ -140,7 +140,7 @@ def handle_job_posted(job_post_data, service_registry):
         }
     }
     '''
-    job_tag = job_post_data['job_data']['job_tag']
+    job_tag = kwargs['job_data']['job_tag']
 
     # text the tag of the available job to all couriers who were in the on-call roster
     # at the time the job was posted
@@ -160,14 +160,15 @@ def handle_job_posted(job_post_data, service_registry):
 
 S3_EVENT_DISPATCH_TABLE = {
     'posted': handle_job_posted,
-    'scan': handle_system_scan
+    'scan': trigger_arbitration
 }
 
 
 def scan_handler(message, receipt_handle, service_registry):
     print('### Inside top-level SCAN event handler function.')
-    print("### message follows:")
-    print(message)
+    print("### Triggering bid arbitration...")
+    # print(message)
+    trigger_arbitration(service_registry)
 
 
 def msg_handler(message, receipt_handle, service_registry):
@@ -206,7 +207,7 @@ def msg_handler(message, receipt_handle, service_registry):
             if not handler:
                 raise Exception('no handler registered for S3 upload events to bucket %s with key %s' % (bucket_name, object_key))
 
-            handler(jsondata, service_registry)
+            handler(service_registry, **jsondata)
 
         except Exception as err:
             print('Error handling JSON job data from URI %s.' % s3key.uri)

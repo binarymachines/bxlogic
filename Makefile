@@ -4,13 +4,13 @@ run:
 	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` python bxlistener.py --configfile config/bx_web.yaml
 
 qlisten:
-	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic --verbose
+	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic
 
 qscan:
-	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic-scan --verbose
+	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` ./sqs-consume.py --config config/bx_sqs.yaml --source bxlogic-scan
 
-qsend_test:
-	./sqssend.py --url https://sqs.us-east-1.amazonaws.com/543680801712/bxlogic_events --body 'foo' --attrs=foo:bar%String
+qsend_arbitrate:
+	./sqssend.py --url https://sqs.us-east-1.amazonaws.com/543680801712/bxlogic_events --body 'arbitration event' --attrs=eventtype:arbitration%String
 
 regen:
 	BXLOGIC_HOME=`pwd` PYTHONPATH=`pwd` routegen -e config/bx_web.yaml > bxlistener.py

@@ -54,7 +54,7 @@ SMS_SYSTEM_COMMAND_SPECS = {
     'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
     'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
-    'er': SMSCommandSpec(command='er', definition='En route to either pick up or deliver for a job', synonyms=[], tag_required=True),
+    'ert': SMSCommandSpec(command='er', definition='En route to either pick up or deliver for a job', synonyms=['er'], tag_required=True),
     'can': SMSCommandSpec(command='can', definition='Cancel (courier can no longer complete an accepted job)', synonyms=[], tag_required=True),
     'fin': SMSCommandSpec(command='fin', definition='Finished a delivery', synonyms=['f'], tag_required=True),
     '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[], tag_required=False),
@@ -793,14 +793,14 @@ def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
     with db_svc.txn_scope() as session:
         courier = lookup_courier_by_id(dlg_context.courier.id, session, db_svc)
         if courier.duty_status == 1:
-            return '\n'.join([
+            return ' '.join([
                 'Hello %s, you are already on the duty roster.' % dlg_context.courier.first_name,
                 'The system will automatically notify you when a job is posted.'
             ])
         else:
             courier.duty_status = 1
             session.flush()
-            return '\n'.join([
+            return ' '.join([
                 'Hello %s, welcome to the on-call roster.' % dlg_context.courier.first_name, 
                 'Reply to advertised job tags with the tag and "acc" to accept a job.',
                 'Text "hlp" or "?" at any time to see the command codes.'
@@ -813,7 +813,7 @@ def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
     with db_svc.txn_scope() as session:
         courier = lookup_courier_by_id(dlg_context.courier.id, session, db_svc)
         if courier.duty_status == 0:
-            return '\n'.join([
+            return ' '.join([
                 'Hello %s, you are already off duty.' % dlg_context.courier.first_name,
                 'Enjoy the downtime!'
             ])
@@ -821,7 +821,7 @@ def handle_off_duty(cmd_object, dlg_context, service_registry, **kwargs):
         else:
             courier.duty_status = 0
             session.flush()
-            return '\n'.join([
+            return ' '.join([
                 'Hello %s, you are now leaving the on-call roster.' % dlg_context.courier.first_name,
                 'Thank you for your service. Have a good one!'
             ])
@@ -838,7 +838,7 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
     with db_svc.txn_scope() as session:
         # make sure the job is open
         if not job_is_available(cmd_object.job_tag, session, db_svc):
-            return '\n'.join(['The job with tag:',
+            return ' '.join(['The job with tag:',
                               cmd_object.job_tag,
                               'is not in the pool of available jobs.',
                               'Text "opn" for a list of open jobs.'
@@ -857,7 +857,7 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
         
         # only one bid per user (TODO: pluggable bidding policy)
         if courier_has_bid(dlg_context.courier.id, cmd_object.job_tag, session, db_svc):
-            return '\n'.join([
+            return ' '.join([
                 'You have already bid on the job:',
                 cmd_object.job_tag,
                 "Once the bid window closes, we'll text you if you get the assignment.",
@@ -866,7 +866,7 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
 
         bidding_window = lookup_open_bidding_window_by_job_tag(cmd_object.job_tag, session, db_svc)
         if not bidding_window:
-            return '\n'.join([
+            return ' '.join([
                 "Sorry, the bidding window for job:",
                 cmd_object.job_tag,
                 "has closed."
@@ -880,7 +880,7 @@ def handle_bid_for_job(cmd_object, dlg_context, service_registry, **kwargs):
                                            job_tag=cmd_object.job_tag)
         session.add(bid)
 
-        return '\n'.join([
+        return ' '.join([
             "Thank you! You've made a bid to accept job:",
             cmd_object.job_tag,
             "If you get the assignment, we'll text you when the bidding window closes."
@@ -994,7 +994,7 @@ def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
                     return ' '.join([
                         "To notify the network that you're en route,",
                         "please text the tag of the job you're starting,",
-                        'space, then "er".'
+                        'space, then "%s".' % cmd_object.cmdspec.command
                     ])
             else:
                 job_tag = cmd_object.job_tag
@@ -1057,7 +1057,7 @@ def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
                     # only one job in your queue; this must be it
                     job_tag = jobs[0].job_tag
 
-                elif lend(jobs) > 1:
+                elif len(jobs) > 1:
                     return ' '.join([
                         'To notify the system that you have completed a job,',
                         'text the job tag, space, and "%s".' % cmd_object.cmdspec.command
@@ -1100,7 +1100,7 @@ def handle_job_finished(cmd_object, dlg_context, service_registry, **kwargs):
 def handle_emergency(cmd_object, dlg_context, service_registry, **kwargs):
     # TODO: add broadcast logic
     courier_name = '%s %s' % (dlg_context.courier.first_name, dlg_context.courier.last_name)
-    return '\n'.join([
+    return ' '.join([
         "Reporting an emergency for courier %s" % courier_name,
         "with mobile phone number %s." % dlg_context.source_number, 
         "To report a crime or a life-threatening emergency, ",
@@ -1490,7 +1490,7 @@ def pfx_command_sethandle(prefix_cmd, dlg_engine, dlg_context, service_registry)
             session.add(new_handle_entry)
             session.flush()
 
-            return '\n'.join([
+            return ' '.join([
                 'Your user handle has been set to %s.' % new_handle_entry.handle,
                 'A system user can send a message to your log by texting:',
                 '@%s, space, and the message.' % handle
@@ -1507,7 +1507,7 @@ def pfx_command_sendlog(prefix_cmd, dlg_engine, dlg_context, service_registry):
     with db_svc.txn_scope() as session:
         try:
             if prefix_cmd.mode == 'simple':
-                return '\n'.join([
+                return ' '.join([
                     "To send a message to a user's log,",
                     'text @<user handle>, space, and the message.'
                 ])
@@ -1642,7 +1642,7 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['bst'], handle_bidding_status_for_job)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['acc'], handle_accept_job)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['dt'], handle_job_details)
-    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['er'], handle_en_route)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['ert'], handle_en_route)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['can'], handle_cancel_job)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['fin'], handle_job_finished)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['911'], handle_emergency)
