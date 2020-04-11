@@ -14,28 +14,15 @@ A live BXL stack consists of the following processes:
 ### Prerequisites
 
 Install the dependencies by issuing `pipenv install`. `pipenv shell` will start the virtual environment.
+This project also requires access to the following services:
 
-```
-Give examples
-```
+- PostgreSQL v9.5 or greater
+- S3 object storage
+- two SQS queues configured on AWS: one for job data, one for out-of-band event data
+
 
 ### Installing
 
-A step by step series of examples that tell you how to get a development env running
-
-Say what the step will be
-
-```
-Give the example
-```
-
-And repeat
-
-```
-until finished
-```
-
-End with an example of getting some data out of the system or using it for a little demo
 
 ## Running the tests
 
@@ -63,9 +50,9 @@ Add additional notes about how to deploy this on a live system
 
 ## Built With
 
-* [Flask](http://www.dropwizard.io/1.0.2/docs/) - The web framework used
-* [SNAP](https://maven.apache.org/) - Dependency Management
-* [SqlAlchemy](https://rometools.github.io/rome/) - Used to generate RSS Feeds
+* [Flask](http://www.dropwizard.io/1.0.2/docs/) - Pythonic web framework
+* [SNAP](https://maven.apache.org/) - wrapper around Flask
+* [SqlAlchemy](https://rometools.github.io/rome/) - Object -Relational Mapping 
 
 ## Contributing
 
