@@ -1,15 +1,19 @@
 # bxlogic
 Binary eXperimental LOGistics Integration and Control
 
-One Paragraph of project description goes here
+BXLOGIC allows a single Dispatcher to coordinate the efforts of a team of Couriers. The Dispatcher interacts with the system via a web interface (a series of forms), and the Couriers interact with the system via SMS. The stack currently uses Twilio to forward SMS traffic to one of our web endpoints.
 
 ## Getting Started
 
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
+A live BXL stack consists of the following processes:
+
+- web listener, started by the `make run` target
+- queue event consumer, started by the `make qlisten` target
+- queue job-data consumer, started by the `make qlisten` target
 
 ### Prerequisites
 
-What things you need to install the software and how to install them
+Install the dependencies by issuing `pipenv install`. `pipenv shell` will start the virtual environment.
 
 ```
 Give examples
