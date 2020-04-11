@@ -8,8 +8,8 @@ BXLOGIC allows a single Dispatcher to coordinate the efforts of a team of Courie
 A live BXL stack consists of the following processes:
 
 - web listener, started by the `make run` target
-- queue event consumer, started by the `make qlisten` target
-- queue job-data consumer, started by the `make qlisten` target
+- event queue consumer, started by the `make qscan` target
+- job-data queue consumer, started by the `make qlisten` target
 
 ### Prerequisites
 
