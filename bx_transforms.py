@@ -37,7 +37,7 @@ assignments.
 '''
 
 SMSCommandSpec = namedtuple('SMSCommandSpec', 'command definition synonyms tag_required')
-SMSGeneratorSpec = namedtuple('SMSGeneratorSpec', 'command definition specifier')
+SMSGeneratorSpec = namedtuple('SMSGeneratorSpec', 'command definition specifier filterchar')
 SMSPrefixSpec = namedtuple('SMSPrefixSpec', 'command definition defchar')
 
 SYSTEM_ID = 'bxlog'
@@ -54,29 +54,51 @@ SMS_SYSTEM_COMMAND_SPECS = {
     'bst': SMSCommandSpec(command='bst', definition='Look up the bidding status of this job', synonyms=[], tag_required=True),
     'acc': SMSCommandSpec(command='acc', definition='Accept a delivery job', synonyms=['ac'], tag_required=True),
     'dt': SMSCommandSpec(command='dt', definition='Detail (find out what a particular job entails)', synonyms=[], tag_required=True),
-    'ert': SMSCommandSpec(command='er', definition='En route to either pick up or deliver for a job', synonyms=['er'], tag_required=True),
+    'ert': SMSCommandSpec(command='ert', definition='En route to either pick up or deliver for a job', synonyms=['er'], tag_required=True),
     'can': SMSCommandSpec(command='can', definition='Cancel (courier can no longer complete an accepted job)', synonyms=[], tag_required=True),
+    'mdel': SMSCommandSpec(command='mdel', definition='Delete a user message', synonyms=[], tag_required=False),
     'fin': SMSCommandSpec(command='fin', definition='Finished a delivery', synonyms=['f'], tag_required=True),
     '911': SMSCommandSpec(command='911', definition='Courier is having a problem and needs assistance', synonyms=[], tag_required=False),
     'hlp': SMSCommandSpec(command='hlp', definition='Display help prompts', synonyms=['?'], tag_required=False)
 }
 
 SMS_GENERATOR_COMMAND_SPECS = {
-    'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.'),
-    'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.'),
-    'awd': SMSGeneratorSpec(command='awd', definition='List my awarded (but not yet accepted) jobs', specifier='.')
+    'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.', filterchar='%'),
+    'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.', filterchar='?'),
+    'awd': SMSGeneratorSpec(command='awd', definition='List my awarded (but not yet accepted) jobs', specifier='.', filterchar='%'),
+    'pro': SMSGeneratorSpec(command='pro', definition='List jobs in progress', specifier='.', filterchar='%'),
+    'msg': SMSGeneratorSpec(command='msg', definition='Display messages belonging to user', specifier='.', filterchar='?')
 }
+
 
 SMS_PREFIX_COMMAND_SPECS = {
     '$': SMSPrefixSpec(command='$', definition='create a user-defined macro', defchar=':'),
     '@': SMSPrefixSpec(command='@', definition="send a message to a user's log via his or her handle", defchar=' '),
-    '&': SMSPrefixSpec(command='&', definition='create a user handle for yourself', defchar=' ')
+    '&': SMSPrefixSpec(command='&', definition='create a user handle for yourself', defchar=' '),
+    '#': SMSPrefixSpec(command='#', definition='look up an abbreviation', defchar=':')
 }
 
 SMS_RESPONSES = {
     'assign_job': 'Thank you for responding -- job tag {tag} has been assigned to you.',
     'assigned_to_other': 'Another courier in the network responded first, but thank you for stepping up.'
 }
+
+
+ABBREVIATIONS = {
+    'etrm': 'East Tremont',
+    'mhvn': 'Mott Haven',
+    'bsty': 'Bed-Stuy',
+    'ftgr': 'Fort Greene',
+    'bhts': 'Brooklyn Heights',
+    'fltb': 'Flatbush',
+    'bwck': 'Bushwick',
+    'wbrg': 'Williamsburg',
+    'grpt': 'Greenpoint',
+    'dtbk': 'Downtown Brooklyn',
+    'ctnh': 'Clinton Hill',
+
+}
+
 
 REPLY_ASSIGN_JOB_TPL = 'Thank you for responding -- job tag {tag} has been assigned to you.'
 REPLY_ASSIGNED_TO_OTHER = 'Another courier in the network responded first, but thank you for stepping up.'
@@ -438,6 +460,21 @@ def list_available_jobs(session, db_svc):
     return jobs
 
 
+def list_in_progress_jobs_for_courier(courier_id, session, db_svc):
+    jobs = []
+
+    JobAssignment = db_svc.Base.classes.job_assignments
+    JobStatus = db_svc.Base.classes.job_status
+
+    for jas, jstat in session.query(JobAssignment, JobStatus).filter(and_(JobAssignment.job_tag == JobStatus.job_tag,
+                                                                          JobStatus.expired_ts == None,
+                                                                          JobStatus.status == JOB_STATUS_IN_PROGRESS,
+                                                                          JobAssignment.courier_id == courier_id)).all():
+
+        jobs.append(jstat)
+    return jobs
+
+
 def prepare_courier_record(input_data, session, db_svc):
     output_record = copy_fields_from(input_data, 'first_name', 'last_name', 'email')
     output_record['mobile_number'] = normalize_mobile_number(input_data['mobile_number'])
@@ -606,7 +643,14 @@ def lookup_sms_command(cmd_string):
 def lookup_generator_command(cmd_string):
     for key, cmd_spec in SMS_GENERATOR_COMMAND_SPECS.items():
         delimiter = cmd_spec.specifier
+        filter_char = cmd_spec.filterchar
+
+        print('the filter character is [%s].' % filter_char)
+
         if cmd_string.split(delimiter)[0] == key:
+            return cmd_spec
+
+        if cmd_string.split(filter_char)[0] == key:
             return cmd_spec
 
     return None
@@ -697,6 +741,8 @@ def parse_sms_message_body(raw_body):
 
         # see if we received a generator 
         # (a command which generates a list or a slice of a list)
+
+        print('******************* LOOKING UP GENERATOR CMD for string [%s]...' % command_string)
         command_spec = lookup_generator_command(command_string)
         if command_spec:
             print('###------------ detected GENERATOR-type command: %s' % command_string)            
@@ -786,6 +832,13 @@ def compile_help_string():
     lines.append('________')
 
     return '\n\n'.join(lines)
+
+
+def handle_delete_user_message(cmd_object, dlg_context, service_registry, **kwargs):
+    # TODO: figure out messages tagging logic
+    # and then fill in the blanks
+    #
+    return 'placeholder for deleting user message'
 
 
 def handle_on_duty(cmd_object, dlg_context, service_registry, **kwargs):
@@ -1154,12 +1207,16 @@ def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_r
                 index += 1
             
             return '\n\n'.join(lines)
-        else:
+        else: 
+            # TODO: investigate why range strings such as "1-1a" get through the regex filter
             ext = tokens[1] 
             # the "extension" is the part of the command string immediately following the specifier character
             # (we have defaulted to a period, but that's settable).
             #
             # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
+
+            print('##----- received extension %s' % ext)
+
             if extension_is_positive_num(ext):
                 list_index=int(ext)
 
@@ -1356,16 +1413,15 @@ def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_
                 
                 return '\n\n'.join(lines)
             
-
-
-def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
-    print('#--- Generating open job listing...')
+def generate_list_in_progress_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    
     db_svc = service_registry.lookup('postgres')
     with db_svc.txn_scope() as session:
-        jobs = list_available_jobs(session, db_svc)
-        if not len(jobs):
-            return 'No open jobs found.'
 
+        jobs = list_in_progress_jobs_for_courier(dlg_context.courier.id, session, db_svc)
+        if not len(jobs):
+            return 'You have no in-progress jobs in your queue.'
+        
         tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
         if len(tokens) == 1:
             lines = []
@@ -1462,6 +1518,236 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
                     lines.append('# %d: %s' % (index, jobs[index-1].job_tag))
                 
                 return '\n\n'.join(lines)
+        
+
+def detect_filter_expression(cmd_object):
+    '''
+    <cmd>?<>exp>.<selector>
+
+    or
+
+    <cmd>?<>exp>
+    '''
+    CHARS_TO_ESCAPE = ['?', '+']
+
+    command_string = cmd_object.cmd_string
+    fchar = cmd_object.cmdspec.filterchar
+    spec = cmd_object.cmdspec.specifier
+
+    if fchar in CHARS_TO_ESCAPE:
+        fchar_seq = "\\" + fchar
+    else:
+        fchar_seq = fchar
+    
+    filter_expr_at_end_rx = re.compile(r'{fchar}[a-zA-z0-9\-]+$'.format(fchar=fchar_seq))
+    filter_expr_with_ext_rx = re.compile(r'{fchar}[a-zA-z0-9\-]+.'.format(fchar=fchar_seq))
+    
+    #
+    # the filter expression is the part of the command string between the filter character and:
+    # -- end of string if there is no specifier char; or
+    # -- the specifier char.
+    # 
+    # 
+
+    match = filter_expr_at_end_rx.search(command_string)
+    if match:
+        start_index = match.span()[0]
+        extent = match.span()[1]
+        return command_string[start_index:extent].lstrip(fchar)
+
+    match = filter_expr_with_ext_rx.search(command_string)
+    if match:
+        start_index = match.span()[0]
+        extent = match.span()[1]
+        return command_string[start_index:extent].lstrip(fchar).rstrip(spec)
+
+    return '*' # if no match, filter is wildcard
+    
+
+def list_user_messages(courier_id, session, db_svc):
+
+    UserMessage = db_svc.Base.classes.messages
+    UserHandle = db_svc.Base.classes.user_handle_maps
+
+    data = []
+    for msg, handle in session.query(UserMessage, UserHandle).filter(UserMessage.from_user == UserHandle.user_id,                                                                    
+                                                                     UserMessage.to_user == courier_id).all():
+    
+
+        msg_rec = {
+            'from_user': msg.from_user,
+            'from_user_handle': handle.handle,
+            'msg_data': msg.msg_data
+        }
+        
+        data.append(msg_rec)
+
+    return data
+
+
+def generate_list_messages(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        user_messages = list_user_messages(dlg_context.courier.id, session, db_svc)
+
+        if not len(user_messages):
+            return 'You have no messages in your inbox.'
+
+        lines = []
+        index = 1
+        for msg in user_messages:
+            lines.append('%d: [%s]: %s' % (index, msg['from_user_handle'], msg['msg_data']))
+            index += 1
+
+    return '\n\n'.join(lines)
+
+
+def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    print('#--- Generating open job listing...')
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        job_records = list_available_jobs(session, db_svc)
+        if not len(job_records):
+            return 'No open jobs found.'
+
+        raw_jobs = [j.job_tag for j in job_records]
+
+        user_commandstring = cmd_object.cmd_string
+        base_command = cmd_object.cmdspec.command
+        filter_expression = detect_filter_expression(cmd_object)
+
+        if filter_expression == '*':
+            jobs = raw_jobs
+        else:
+            jobs = [j for j in raw_jobs if filter_expression in j]
+
+        tokens = cmd_object.cmd_string.split(cmd_object.cmdspec.specifier)
+        if len(tokens) == 1:
+            lines = []
+            index = 1
+
+            # if no specifier is present in the command string, return the entire list (with indices)
+            #TODO: segment output for very long lists
+            for job_tag in jobs:
+                lines.append("# %d: %s" % (index, job_tag))
+                index += 1
+            
+            return '\n\n'.join(lines)
+        else:
+            ext = tokens[1] 
+            # the "extension" is the part of the command string immediately following the specifier character
+            # (we have defaulted to a period, but that's settable).
+            #
+            # if we receive <cmd><specifier>N where N is an integer, return the Nth item in the list
+            if extension_is_positive_num(ext):
+                list_index=int(ext)
+
+                if list_index > len(jobs):
+                    return "You requested open job # %d, but there are only %d jobs open." % (list_index, len(jobs))
+                if list_index == 0:
+                    return "You may not request the 0th element of a list. (Nice try, C programmers.)"
+
+                list_element = jobs[list_index-1]
+                
+                # if the user is extracting a single list element (by using an integer extension), we do 
+                # one of two things. If there were no command modifiers specified, we simply return the element:
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_negative_num(ext):
+                neg_index = int(ext)
+
+                if neg_index == 0:
+                    return '-0 is not a valid negative index. Use -1 to specify the last job in the list.' 
+
+                zero_list_index = len(jobs) + neg_index
+
+                if zero_list_index < 0:
+                    return 'You specified a negative list offset (%d), but there are only %d open jobs.' % (neg_index, len(jobs))
+                list_element = jobs[zero_list_index]
+
+                if not len(cmd_object.modifiers):
+                    return list_element
+                else:
+                    # ...but if there were modifiers, then we construct a new command by chaining the output of this command 
+                    # with the modifier array.
+                    command_tokens = [list_element]
+                    command_tokens.extend(cmd_object.modifiers)
+
+                    # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                    command_string = '+'.join(command_tokens)
+                    chained_command = parse_sms_message_body(command_string)
+
+                    print('command: ' + str(chained_command))                                       
+                    return dlg_engine.reply_command(chained_command, dlg_context, service_registry)
+
+            elif extension_is_range(ext):
+                # if we receive <cmd><specifier>N-M where N and M are both integers, return the Nth through the Mth items
+                tokens = ext.split('-')
+                if len(tokens) != 2:
+                    return 'The range extension for this command must be formatted as A-B where A and B are integers.'
+
+                min_index = int(tokens[0])
+                max_index = int(tokens[1])
+                
+                if min_index > max_index:
+                    return 'The first number in your range specification A-B must be less than or equal to the second number.'
+
+                if max_index > len(jobs):
+                    return "There are only %d jobs open." % len(jobs)
+
+                if min_index == 0:
+                    return "You may not request the 0th element of a list. (This stack was written in Python, but the UI is in English.)"
+
+
+                if not len(cmd_object.modifiers):
+                    lines = []
+                    for index in range(min_index, max_index+1):
+                        lines.append('# %d: %s' % (index, jobs[index-1]))
+                    
+                    return '\n\n'.join(lines)
+                else:
+                    # ...but if there were modifiers, then for each element in the filtered list...
+                    #
+                    lines = []
+                    for index in range(min_index, max_index+1):
+                        # ...we construct a new command by chaining the current element
+                        # with the modifier array
+
+                        command_tokens = [jobs[index-1]]
+                        command_tokens.extend(cmd_object.modifiers)
+
+                        # TODO: instead of splitting on this char, urldecode the damn thing from the beginning
+                        command_string = '+'.join(command_tokens)
+                        chained_command = parse_sms_message_body(command_string)
+
+                        print('command: ' + str(chained_command))                                       
+                        lines.append(dlg_engine.reply_command(chained_command, dlg_context, service_registry))
+
+                    return '\n\n'.join(lines)
+
+
+
+def pfx_command_lookup_abbrev(prefix_cmd, dlg_engine, dlg_context, service_registry):
+
+    abbreviation = prefix_cmd.name
+
+    expansion = ABBREVIATIONS.get(abbreviation, 'No such abbreviation registered.') 
+    return expansion
 
 
 def pfx_command_sethandle(prefix_cmd, dlg_engine, dlg_context, service_registry):
@@ -1649,14 +1935,19 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['hlp'], handle_help)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['on'], handle_on_duty)
     engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['off'], handle_off_duty)
+    engine.register_cmd_spec(SMS_SYSTEM_COMMAND_SPECS['mdel'], handle_delete_user_message)
+    
 
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_accepted_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['awd'], generate_list_my_awarded_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['pro'], generate_list_in_progress_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['msg'], generate_list_messages)
 
     engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['$'], pfx_command_macro)
     engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['@'], pfx_command_sendlog)
     engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['&'], pfx_command_sethandle)
+    engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['#'], pfx_command_lookup_abbrev)
 
     print('###------ SMS payload:')
     source_number = input_data['From']
