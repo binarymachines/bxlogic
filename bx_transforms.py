@@ -98,7 +98,6 @@ ABBREVIATIONS = {
     'grpt': 'Greenpoint',
     'dtbk': 'Downtown Brooklyn',
     'ctnh': 'Clinton Hill',
-
 }
 
 
@@ -409,6 +408,25 @@ def job_belongs_to_courier(job_tag, courier_id, session, db_svc):
         return True
     except NoResultFound:
         return False
+
+
+def list_user_bids(courier_id, session, db_svc):
+    BidWindow = db_svc.Base.classes.bidding_windows
+    JobBid = db_svc.Base.classes.job_bids
+
+    bids = []
+    for window, bid in session.query(BidWindow, JobBid).filter(and_(JobBid.bidding_window_id == BidWindow.id,
+                                                                    BidWindow.close_ts == None,
+                                                                    JobBid.courier_id == courier_id,
+                                                                    JobBid.expired_ts == None)).all():
+        bids.append({
+            'bid_id': bid.id,
+            'window_id': window.id,
+            'job_tag': bid.job_tag,
+            'timestamp': bid.write_ts
+        })
+
+    return bids
 
 
 def list_awarded_jobs(courier_id, session, db_svc):
@@ -1170,7 +1188,7 @@ def handle_bidding_status_for_job(cmd_object, dlg_context, service_registry, **k
 
     return "Placeholder for reporting bidding status of a job"
 
-
+'''
 def extension_is_positive_num(ext_string):
     if INTEGER_RX.match(ext_string):
         return True
@@ -1186,13 +1204,7 @@ def extension_is_range(ext_string):
     if RANGE_RX.match(ext_string):
         return True
     return False
-
-
-def generate_list_bids(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
-    '''list the jobs this courier has bid on
-    '''
-    return "placeholder for listing this user's bids"
-    #db_svc = service_registry
+'''
 
 
 def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
@@ -1340,6 +1352,34 @@ def generate_list_messages(cmd_object, dlg_engine, dlg_context, service_registry
                                   service_registry=service_registry)
         
 
+def render_bid_line(index, bid_record):
+    if index:
+        return 'bid #%d: %s' % (index, bid_record['job_tag'])
+    
+    return bid_record['job_tag']
+    
+
+def filter_bid(bid_record, filter_expression):
+    return True
+
+
+def generate_list_my_bids(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        user_bids = list_user_bids(dlg_context.courier.id, session, db_svc)
+
+        if not len(user_bids):
+            return 'You have no active bids.'
+
+        responder = ListOutputResponder(cmd_object.cmdspec, parse_sms_message_body)
+        return responder.generate(command_object=cmd_object,
+                                  record_list=user_bids,
+                                  render_callback=render_bid_line,
+                                  filter_callback=filter_bid,
+                                  dialog_context=dlg_context,
+                                  dialog_engine=dlg_engine,
+                                  service_registry=service_registry)
+    
 
 def render_job_line(index, job_tag):
     return '# %d: %s' % (index, job_tag)
@@ -1565,8 +1605,7 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['pro'], generate_list_in_progress_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['msg'], generate_list_messages)
-    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['bst'], generate_list_bids)
-
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['bst'], generate_list_my_bids)
 
     engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['$'], pfx_command_macro)
     engine.register_prefix_cmd(SMS_PREFIX_COMMAND_SPECS['@'], pfx_command_sendlog)
