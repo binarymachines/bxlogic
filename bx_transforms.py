@@ -45,10 +45,6 @@ SMSPrefixSpec = namedtuple('SMSPrefixSpec', 'command definition defchar')
 SYSTEM_ID = 'bxlog'
 NETWORK_ID = 'ccr'
 
-INTEGER_RX = re.compile(r'^[0-9]+$')
-NEG_INTEGER_RX = re.compile(r'^-[0-9]+$')
-RANGE_RX = re.compile(r'^[0-9]+\-[0-9]+$')
-
 SMS_SYSTEM_COMMAND_SPECS = {
     'on': SMSCommandSpec(command='on', definition='Courier coming on duty', synonyms=[], tag_required=False),
     'off': SMSCommandSpec(command='off', definition='Courier going off duty', synonyms=[], tag_required=False),
@@ -67,7 +63,7 @@ SMS_GENERATOR_COMMAND_SPECS = {
     'my': SMSGeneratorSpec(command='my', definition='List my pending (already accepted) jobs', specifier='.', filterchar='?'),
     'opn': SMSGeneratorSpec(command='opn', definition='List open (available) jobs', specifier='.', filterchar='?'),
     'awd': SMSGeneratorSpec(command='awd', definition='List my awarded (but not yet accepted) jobs', specifier='.', filterchar='?'),
-    'pro': SMSGeneratorSpec(command='pro', definition='List jobs in progress', specifier='.', filterchar='?'),
+    'prg': SMSGeneratorSpec(command='prg', definition='List jobs in progress', specifier='.', filterchar='?'),
     'msg': SMSGeneratorSpec(command='msg', definition='Display messages belonging to user', specifier='.', filterchar='?'),
     'bst': SMSGeneratorSpec(command='bst', definition='Bidding status (jobs you have bid on)', specifier='.', filterchar='?')
 }
@@ -557,6 +553,27 @@ def exception_status(err, **kwargs):
         result.update(**kwargs)
 
     return json.dumps(result)
+
+
+def update_job_status(job_tag, new_status, session, db_svc):
+    current_time = datetime.datetime.now()
+    current_status_record = lookup_current_job_status(job_tag, session, db_svc)
+    if current_status_record.status == new_status:
+        return False
+    
+    print('### updating the status for job tag %s...' % job_tag)
+
+    # expire the existing status
+    current_status_record.expired_ts = current_time
+    session.add(current_status_record)
+
+    # add a new status record
+    new_job_status = ObjectFactory.create_job_status(db_svc,
+                                                     job_tag=job_tag,
+                                                     status=new_status,
+                                                     write_ts=current_time)
+    session.add(new_job_status)
+    return True
 
 
 def ping_func(input_data, service_objects, **kwargs):
@@ -1103,15 +1120,26 @@ def handle_en_route(cmd_object, dlg_context, service_registry, **kwargs):
             traceback.print_exc(file=sys.stdout)
             return 'There was an error updating the status of this job. Please contact your administrator.'
 
-    
 
 def handle_cancel_job(cmd_object, dlg_context, service_registry, **kwargs):
-    # TODO: handle missing job tag
-    # TODO: update status table
     if not cmd_object.job_tag:
         return 'To cancel a job, text the job tag, a space, and "can".'
     
-    # TODO: add cancel logic
+    job_tag = cmd_object.job_tag
+    db_svc = service_registry.lookup('postgres')
+    with db_svc.txn_scope() as session:
+        
+        if not job_belongs_to_courier(job_tag, dlg_context.courier.id, session, db_svc):
+            return 'Job with tag %s does not appear to be one of yours.' % job_tag
+
+        jstat = lookup_current_job_status(job_tag, session, db_svc)
+        if jstat.status not in [JOB_STATUS_ACCEPTED, JOB_STATUS_IN_PROGRESS]:
+            return "You cannot cancel a job unless it's either accepted or in progress."
+        
+        # 3. update status table and rebroadcast job
+        update_job_status(job_tag, JOB_STATUS_BROADCAST, session, db_svc)
+        jobdata = lookup_job_data_by_tag(job_tag, session, db_svc)
+
     return "Recording job cancellation for job tag: %s" % cmd_object.job_tag
     
 
@@ -1188,24 +1216,6 @@ def handle_bidding_status_for_job(cmd_object, dlg_context, service_registry, **k
 
     return "Placeholder for reporting bidding status of a job"
 
-'''
-def extension_is_positive_num(ext_string):
-    if INTEGER_RX.match(ext_string):
-        return True
-    return False
-
-def extension_is_negative_num(ext_string):
-    if NEG_INTEGER_RX.match(ext_string):
-        return True
-    return False
-
-
-def extension_is_range(ext_string):
-    if RANGE_RX.match(ext_string):
-        return True
-    return False
-'''
-
 
 def generate_list_my_awarded_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
     '''List jobs which have been awarded to this courier in the bidding process
@@ -1269,7 +1279,6 @@ def generate_list_my_accepted_jobs(cmd_object, dlg_engine, dlg_context, service_
                                   dialog_engine=dlg_engine,
                                   service_registry=service_registry)
 
-        
 
 def generate_list_in_progress_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
     db_svc = service_registry.lookup('postgres')
@@ -1286,7 +1295,7 @@ def generate_list_in_progress_jobs(cmd_object, dlg_engine, dlg_context, service_
                                         plural_item_noun='in-progress jobs')
 
         return responder.generate(command_object=cmd_object,
-                                  string_list=raw_jobs,
+                                  record_list=raw_jobs,
                                   render_callback=render_job_line,
                                   filter_callback=filter_job_tag,
                                   dialog_context=dlg_context,
@@ -1355,7 +1364,6 @@ def generate_list_messages(cmd_object, dlg_engine, dlg_context, service_registry
 def render_bid_line(index, bid_record):
     if index:
         return 'bid #%d: %s' % (index, bid_record['job_tag'])
-    
     return bid_record['job_tag']
     
 
@@ -1382,7 +1390,9 @@ def generate_list_my_bids(cmd_object, dlg_engine, dlg_context, service_registry,
     
 
 def render_job_line(index, job_tag):
-    return '# %d: %s' % (index, job_tag)
+    if index:
+        return '# %d: %s' % (index, job_tag)
+    return job_tag
 
 
 def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registry, **kwargs):
@@ -1404,7 +1414,6 @@ def generate_list_open_jobs(cmd_object, dlg_engine, dlg_context, service_registr
                                   dialog_engine=dlg_engine,
                                   service_registry=service_registry)
 
-        
 
 def pfx_command_lookup_abbrev(prefix_cmd, dlg_engine, dlg_context, service_registry):
 
@@ -1603,7 +1612,7 @@ def sms_responder_func(input_data, service_objects, **kwargs):
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['my'], generate_list_my_accepted_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['awd'], generate_list_my_awarded_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['opn'], generate_list_open_jobs)
-    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['pro'], generate_list_in_progress_jobs)
+    engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['prg'], generate_list_in_progress_jobs)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['msg'], generate_list_messages)
     engine.register_generator_cmd(SMS_GENERATOR_COMMAND_SPECS['bst'], generate_list_my_bids)
 

@@ -140,12 +140,12 @@ class ListOutputResponder(object):
                 # one of two things. If there were no command modifiers specified, we simply return the element:
                 #
                 if not len(cmd_object.modifiers):
-                    return render_callback(0, list_element)
+                    return render_callback(1, list_element)
                 else:
                     # ...but if there were modifiers, then we construct a new command by chaining 
                     # the output of this command with the modifiers passed to us.
                     #
-                    command_tokens = [list_element]
+                    command_tokens = [render_callback(0, list_element)]
                     command_tokens.extend(cmd_object.modifiers)
 
                     # parse function reads urlquoted strings, so sub + for spaces
